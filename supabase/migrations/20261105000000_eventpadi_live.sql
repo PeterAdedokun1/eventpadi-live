@@ -44,6 +44,23 @@ create table if not exists public.games (
   updated_at  timestamptz not null default now()
 );
 create unique index if not exists games_active_pin on public.games (pin) where phase <> 'ended';
+alter table public.games add column if not exists owner      uuid references auth.users (id) on delete cascade;
+alter table public.games add column if not exists quiz_id    uuid;
+alter table public.games add column if not exists started_at timestamptz;
+alter table public.games add column if not exists ended_at   timestamptz;
+create index if not exists games_owner on public.games (owner, created_at desc);
+
+-- Games saved by organisers (drafts allowed; validated when a lobby opens).
+create table if not exists public.quizzes (
+  id         uuid primary key default gen_random_uuid(),
+  owner      uuid not null references auth.users (id) on delete cascade,
+  title      text not null default '',
+  event      text not null default '',
+  data       jsonb not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists quizzes_owner on public.quizzes (owner, updated_at desc);
 
 create table if not exists public.players (
   id            uuid primary key default gen_random_uuid(),
@@ -94,6 +111,7 @@ alter table public.players      enable row level security;
 alter table public.answers      enable row level security;
 alter table public.pin_attempts enable row level security;
 alter table public.winners      enable row level security;
+alter table public.quizzes      enable row level security;
 
 /* ---------------- Internal helpers ---------------- */
 
@@ -264,19 +282,24 @@ begin
       and (updated_at < now() - interval '3 hours'
            or (phase = 'podium' and updated_at < now() - interval '1 hour'))
   loop
-    update public.games set phase = 'ended' where id = g.id;
+    update public.games set phase = 'ended', ended_at = coalesce(ended_at, now()) where id = g.id;
     perform public._bump(g.id);
   end loop;
-  delete from public.games where updated_at < now() - interval '2 days';
+  -- Organisers keep their game history (reports) for a year; games with no owner go after 2 days.
+  delete from public.games where owner is null and updated_at < now() - interval '2 days';
+  delete from public.games where updated_at < now() - interval '365 days';
+  -- Lobbies that never started are not worth keeping.
+  delete from public.games where phase = 'ended' and started_at is null and updated_at < now() - interval '1 day';
   delete from public.pin_attempts where minute < now() - interval '10 minutes';
 end $$;
 
 /* ---------------- Host API ---------------- */
 
-create or replace function public.create_game(p_quiz jsonb, p_host_key text default null) returns jsonb
+drop function if exists public.create_game(jsonb, text);
+create or replace function public.create_game(p_quiz jsonb, p_quiz_id uuid default null) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
-  v_key text;
+  v_uid uuid := auth.uid();
   v_qs jsonb := '[]'::jsonb;
   v_n int;
   x jsonb;
@@ -290,9 +313,10 @@ declare
   v_pin text;
   g public.games;
 begin
-  select value into v_key from public.settings where key = 'host_key';
-  if coalesce(v_key, '') <> '' and v_key is distinct from p_host_key then
-    return jsonb_build_object('error', 'Wrong host password.', 'need_key', true);
+  if v_uid is null then return jsonb_build_object('error', 'Please sign in to host a game.', 'auth', true); end if;
+  -- Per-organiser limit: a few live games at once (e.g. two rooms), so one account can't exhaust capacity.
+  if (select count(*) from public.games where owner = v_uid and phase <> 'ended') >= 3 then
+    return public._err('You already have 3 live games. End one before opening another.');
   end if;
   if (select count(*) from public.games where phase <> 'ended') >= 500 then
     return public._err('The server is busy. Try again in a few minutes.');
@@ -354,8 +378,8 @@ begin
   for attempt in 1 .. 50 loop
     v_pin := (100000 + floor(random() * 900000))::int::text;
     begin
-      insert into public.games (pin, quiz, title, event, total)
-      values (v_pin, jsonb_build_object('questions', v_qs),
+      insert into public.games (owner, quiz_id, pin, quiz, title, event, total)
+      values (v_uid, p_quiz_id, v_pin, jsonb_build_object('questions', v_qs),
               coalesce(nullif(public._clean(p_quiz ->> 'title', 80), ''), 'Live quiz'),
               public._clean(p_quiz ->> 'event', 80), v_n)
       returning * into g;
@@ -455,6 +479,7 @@ begin
       return public._err('Wait for at least one player to join.');
     end if;
     update public.players set score = 0, streak = 0, correct_count = 0, last = null where game_id = g.id;
+    update public.games set started_at = now() where id = g.id;
     perform public._start_question(g.id, 0);
 
   elsif p_action = 'reveal' then
@@ -468,7 +493,7 @@ begin
       perform public._bump(g.id);
     elsif g.phase in ('reveal', 'leaderboard') then
       if g.qi >= g.total - 1 then
-        update public.games set phase = 'podium' where id = g.id;
+        update public.games set phase = 'podium', ended_at = now() where id = g.id;
         perform public._bump(g.id);
       else
         perform public._start_question(g.id, g.qi + 1);
@@ -509,7 +534,7 @@ begin
     perform public._bump(g.id);
 
   elsif p_action = 'end' then
-    update public.games set phase = 'ended' where id = g.id;
+    update public.games set phase = 'ended', ended_at = coalesce(ended_at, now()) where id = g.id;
     perform public._bump(g.id);
 
   else
@@ -702,12 +727,161 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+/* ---------------- Organiser API (signed in) ---------------- */
+
+-- Saved games, newest first. "types" lists the round types for the card badges.
+create or replace function public.my_quizzes() returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_uid uuid := auth.uid();
+begin
+  if v_uid is null then return jsonb_build_object('error', 'Please sign in.', 'auth', true); end if;
+  return jsonb_build_object('quizzes', coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', q.id, 'title', q.title, 'event', q.event, 'updated_at', public._ms(q.updated_at),
+      'rounds', coalesce(jsonb_array_length(q.data -> 'questions'), 0),
+      'types', (select coalesce(jsonb_agg(distinct e ->> 'type'), '[]'::jsonb) from jsonb_array_elements(q.data -> 'questions') e),
+      'played', (select count(*) from public.games g where g.quiz_id = q.id and g.started_at is not null))
+      order by q.updated_at desc)
+    from public.quizzes q where q.owner = v_uid), '[]'::jsonb));
+end $$;
+
+create or replace function public.get_quiz(p_id uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare q public.quizzes;
+begin
+  if auth.uid() is null then return jsonb_build_object('error', 'Please sign in.', 'auth', true); end if;
+  select * into q from public.quizzes where id = p_id and owner = auth.uid();
+  if not found then return public._err('That game wasn''t found.'); end if;
+  return q.data || jsonb_build_object('id', q.id, 'title', q.title, 'event', q.event, 'updated_at', public._ms(q.updated_at));
+end $$;
+
+-- Create (p_id null) or update a saved game. Drafts may be incomplete.
+create or replace function public.save_quiz(p_id uuid, p_quiz jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_uid uuid := auth.uid();
+  v_data jsonb;
+  q public.quizzes;
+begin
+  if v_uid is null then return jsonb_build_object('error', 'Please sign in.', 'auth', true); end if;
+  if jsonb_typeof(p_quiz -> 'questions') is distinct from 'array' then return public._err('That isn''t a valid game.'); end if;
+  if jsonb_array_length(p_quiz -> 'questions') > 100 then return public._err('A game can have at most 100 rounds.'); end if;
+  v_data := p_quiz - 'id' - 'title' - 'event' - 'updated_at' - 'savedAt';
+  if octet_length(v_data::text) > 300000 then return public._err('This game is too large to save.'); end if;
+
+  if p_id is not null then
+    update public.quizzes set data = v_data, updated_at = now(),
+      title = public._clean(p_quiz ->> 'title', 80), event = public._clean(p_quiz ->> 'event', 80)
+    where id = p_id and owner = v_uid
+    returning * into q;
+  end if;
+  if q.id is null then
+    if (select count(*) from public.quizzes where owner = v_uid) >= 300 then
+      return public._err('You can save up to 300 games. Delete some old ones first.');
+    end if;
+    insert into public.quizzes (owner, title, event, data)
+    values (v_uid, public._clean(p_quiz ->> 'title', 80), public._clean(p_quiz ->> 'event', 80), v_data)
+    returning * into q;
+  end if;
+  return jsonb_build_object('ok', true, 'id', q.id, 'updated_at', public._ms(q.updated_at));
+end $$;
+
+create or replace function public.delete_quiz(p_id uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then return jsonb_build_object('error', 'Please sign in.', 'auth', true); end if;
+  delete from public.quizzes where id = p_id and owner = auth.uid();
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- Games this organiser has hosted: live ones (to resume) and finished ones (for reports).
+create or replace function public.my_games(p_limit int default 50) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_uid uuid := auth.uid();
+begin
+  if v_uid is null then return jsonb_build_object('error', 'Please sign in.', 'auth', true); end if;
+  return jsonb_build_object('games', coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', g.id, 'title', g.title, 'event', g.event, 'pin', g.pin, 'phase', g.phase, 'rounds', g.total,
+      'created_at', public._ms(g.created_at), 'started_at', public._ms(g.started_at), 'ended_at', public._ms(g.ended_at),
+      'players', (select count(*) from public.players p where p.game_id = g.id),
+      'host_token', case when g.phase <> 'ended' then g.host_token end)
+      order by g.created_at desc)
+    from (select * from public.games where owner = v_uid and (started_at is not null or phase <> 'ended')
+          order by created_at desc limit least(greatest(coalesce(p_limit, 50), 1), 200)) g), '[]'::jsonb));
+end $$;
+
+-- Full report of one hosted game: every round's results and the final standings.
+create or replace function public.game_report(p_game uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  g public.games;
+  q jsonb;
+  v_rounds jsonb := '[]'::jsonb;
+  v_r jsonb;
+  v_type text;
+begin
+  if auth.uid() is null then return jsonb_build_object('error', 'Please sign in.', 'auth', true); end if;
+  select * into g from public.games where id = p_game and owner = auth.uid();
+  if not found then return public._err('That game wasn''t found.'); end if;
+
+  for i in 0 .. g.total - 1 loop
+    q := g.quiz -> 'questions' -> i;
+    v_type := q ->> 'type';
+    v_r := jsonb_build_object('i', i, 'type', v_type, 'text', q ->> 'text', 'played', i <= g.qi,
+      'answered', (select count(*) from public.answers a where a.game_id = g.id and a.qi = i));
+    if v_type in ('quiz', 'poll') then
+      v_r := v_r || jsonb_build_object('options', q -> 'options', 'correct', q -> 'correct', 'counts', (
+        select jsonb_agg(coalesce(c.n, 0) order by k)
+        from generate_series(0, jsonb_array_length(q -> 'options') - 1) k
+        left join (select choice, count(*) n from public.answers where game_id = g.id and qi = i group by choice) c on c.choice = k));
+      if v_type = 'quiz' then
+        v_r := v_r || jsonb_build_object('avg_ms', (select round(avg(ms)) from public.answers
+                                                   where game_id = g.id and qi = i and choice = (q ->> 'correct')::int));
+      end if;
+    elsif v_type = 'type' then
+      v_r := v_r || jsonb_build_object('answer', q ->> 'answer', 'fastest', coalesce((
+        select jsonb_agg(jsonb_build_object('name', p.name, 'ms', a.ms) order by a.ms)
+        from (select * from public.answers where game_id = g.id and qi = i order by ms limit 5) a
+        join public.players p on p.id = a.player_id), '[]'::jsonb));
+    elsif v_type = 'raffle' then
+      v_r := v_r || jsonb_build_object('winners', coalesce((
+        select jsonb_agg(p.name order by w.place)
+        from public.winners w join public.players p on p.id = w.player_id
+        where w.game_id = g.id and w.qi = i and not w.forfeited), '[]'::jsonb));
+    end if;
+    v_rounds := v_rounds || v_r;
+  end loop;
+
+  return jsonb_build_object(
+    'game', jsonb_build_object('id', g.id, 'title', g.title, 'event', g.event, 'pin', g.pin, 'phase', g.phase,
+      'rounds', g.total, 'played', greatest(g.qi + 1, 0), 'scored', public._scored_rounds(g),
+      'created_at', public._ms(g.created_at), 'started_at', public._ms(g.started_at), 'ended_at', public._ms(g.ended_at)),
+    'rounds', v_rounds,
+    'players', coalesce((
+      select jsonb_agg(jsonb_build_object('rank', rn, 'name', name, 'score', score, 'correct', correct_count,
+                                          'joined_at', public._ms(joined_at), 'prizes', prizes) order by rn)
+      from (select t.*, row_number() over (order by score desc, joined_at) rn,
+                   (select coalesce(jsonb_agg(g.quiz -> 'questions' -> w.qi ->> 'text' order by w.qi), '[]'::jsonb)
+                    from public.winners w where w.game_id = g.id and w.player_id = t.id and not w.forfeited) prizes
+            from public.players t where t.game_id = g.id) x), '[]'::jsonb));
+end $$;
+
+-- Remove a finished game (and its players' data) from the organiser's history.
+create or replace function public.forget_game(p_game uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then return jsonb_build_object('error', 'Please sign in.', 'auth', true); end if;
+  delete from public.games where id = p_game and owner = auth.uid() and phase = 'ended';
+  if not found then return public._err('Only finished games can be deleted.'); end if;
+  return jsonb_build_object('ok', true);
+end $$;
+
 /* ---------------- Permissions ---------------- */
 
 revoke all on all tables in schema public from anon, authenticated;
 revoke execute on all functions in schema public from public, anon, authenticated;
 grant execute on function
-  public.create_game(jsonb, text),
   public.host_view(uuid, uuid),
   public.host_action(uuid, uuid, text, jsonb),
   public.check_pin(text),
@@ -717,6 +891,16 @@ grant execute on function
   public.submit_text(uuid, uuid, int, text),
   public.leave_game(uuid, uuid)
 to anon, authenticated;
+grant execute on function
+  public.create_game(jsonb, uuid),
+  public.my_quizzes(),
+  public.get_quiz(uuid),
+  public.save_quiz(uuid, jsonb),
+  public.delete_quiz(uuid),
+  public.my_games(int),
+  public.game_report(uuid),
+  public.forget_game(uuid)
+to authenticated;
 
 /* ---------------- Scheduled cleanup (pg_cron) ---------------- */
 do $outer$

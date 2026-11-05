@@ -31,11 +31,11 @@ The final screen shows the podium (when the game has scored rounds) and every ra
 
 - **The database is the authority.** It validates quizzes, records answer times using database time, scores, and decides phase changes. Phones can't cheat by changing their clock or editing the page.
 - **Correct answers are hidden.** They are never sent to phones until the question has closed.
-- **Locked down.** Every table has RLS on with no policies, so the public anon key can only call the 8 API functions (`create_game`, `host_view`, `host_action`, `check_pin`, `join_game`, `player_view`, `submit_answer`, `leave_game`).
-- **The host is protected by a password** (the `host_key` setting). Without it, nobody can create games.
+- **Locked down.** Every table has RLS on with no policies. Anonymous visitors (phones) can only call the player and host-token functions (`check_pin`, `join_game`, `player_view`, `submit_answer`, `submit_text`, `leave_game`, `host_view`, `host_action`). Organiser functions (`create_game`, `my_quizzes`, `get_quiz`, `save_quiz`, `delete_quiz`, `my_games`, `game_report`, `forget_game`) need a signed-in account and only ever touch that account's data.
+- **Organiser accounts.** Hosts sign up with email and password (Supabase Auth). Games are saved to the account with autosave, and every hosted game keeps a report (players, scores, each round's results, raffle winners) for a year. Each account can run up to 3 live games at once.
 - **Timing comes from the server clock.** Every screen syncs to it, so countdowns match across devices. A question closes when its timer ends (the host screen triggers this) or as soon as everyone has answered (the database does it in the last answer).
 - **Reconnects.** Refreshing a phone or the host screen resumes the game. Tokens are stored in `localStorage`. If Realtime drops, pages fall back to polling.
-- **Cleanup.** A `pg_cron` job closes games idle for 3 h, closes finished games after 1 h, and deletes old data after 2 days.
+- **Cleanup.** A `pg_cron` job closes games idle for 3 h and finished games after 1 h. Reports are kept for 365 days; lobbies that never started are deleted after a day.
 
 Scoring: a correct quiz answer earns 500 to 1000 points depending on speed, plus 100 per consecutive correct answer (up to +500). Fastest fingers earns 500 to 1000 for speed. Polls and raffles are not scored. Fastest-fingers words and raffle winners are never sent to phones while a round is open.
 
@@ -50,12 +50,12 @@ You need Node 18+ and a Supabase account.
    npm install
    SUPABASE_ACCESS_TOKEN=sbp_xxx npm run setup
    ```
-   This creates a project called `eventpadi-live` (region `eu-west-2`, London, the closest to Lagos), applies `supabase/migrations/*.sql`, generates a host password and writes `public/config.js`. The project ref, database password and host password are saved to `.env.local`; keep that file private.
+   This creates a project called `eventpadi-live` (region `eu-west-2`, London, the closest to Lagos), applies `supabase/migrations/*.sql` and writes `public/config.js`. The project ref and keys are saved to `.env.local`; keep that file private.
    To re-apply the schema to the same project later, run the same command again. It reads the project ref from `.env.local`.
 
-2. **Test it against the real project:**
+2. **Test it against the real project.** The test signs in as an organiser, so create a confirmed test account (Supabase dashboard → Authentication → Add user, with "Auto confirm") and run:
    ```bash
-   npm test
+   TEST_HOST_EMAIL=you@example.com TEST_HOST_PASSWORD=... npm test
    ```
 
 3. **Deploy the pages to Vercel:**
@@ -66,10 +66,7 @@ You need Node 18+ and a Supabase account.
 
 Local development: `npm run dev`, then open http://localhost:3000/host. It uses the Supabase project in `public/config.js`.
 
-Change the host password:
-```sql
-update public.settings set value = 'new-password' where key = 'host_key';
-```
+**Email.** Supabase's built-in email sender is limited to a few emails an hour, which is too few for sign-up confirmations and password resets at scale. Before launch, connect your own email provider in Supabase → Authentication → Emails → SMTP settings (for example Resend, Postmark or Amazon SES), and set the sender to an Eventpadi address.
 
 ## Capacity
 
@@ -79,7 +76,8 @@ Each phone holds one Supabase Realtime connection. **The Supabase Free plan allo
 
 ```
 supabase/migrations/…_eventpadi_live.sql   Tables, RLS, game logic functions, broadcasts, cleanup job
-public/host.html  + js/host.js             Projector: game editor, lobby/QR, rounds, reveal, scoreboard, podium
+public/host.html  + js/host.js             Projector: game editor (autosaved), lobby/QR, rounds, reveal, scoreboard, podium
+public/js/dashboard.js                     Organiser sign-in, dashboard, templates, game reports
 public/play.html  + js/play.js             Attendee phone
 public/js/common.js                        Supabase client, server clock sync, realtime helpers, UI helpers
 public/config.js                           Supabase URL and anon key (generated by setup)
@@ -93,5 +91,4 @@ vercel.json                                Static hosting, routes, security head
 
 ## Next steps
 
-- Quizzes are saved in the host's browser (with JSON import/export). To keep them per user, add Supabase Auth plus a `quizzes` table with RLS, and swap the host password for login.
 - Ideas: images on questions, true/false and type-answer questions, team mode, sounds on the projector, a nickname profanity filter.

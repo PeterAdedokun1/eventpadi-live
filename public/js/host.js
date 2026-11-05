@@ -1,24 +1,12 @@
 "use strict";
-/* Host / projector screen. The quiz editor is local; once a lobby is open the
-   database is the source of truth. Realtime broadcasts tell us when to re-read
-   host_view(); deadlines come from the server clock. */
+/* Host / projector screen: game editor (saved to the organiser's account) and the
+   live game. Once a lobby is open the database is the source of truth. Realtime
+   broadcasts tell us when to re-read host_view(); deadlines come from the server clock.
+   Sign-in, dashboard and reports live in dashboard.js. */
 
 const TIMES = [5, 10, 15, 20, 30, 45, 60, 90, 120];
-const K = { draft: "ep-live:draft", lib: "ep-live:library", session: "ep-live:host-session", key: "ep-live:host-key" };
-
-const SAMPLE = {
-  event: "Lagos Tech Summit 2026",
-  title: "Morning icebreaker",
-  questions: [
-    { type: "quiz", text: "What does \"padi\" mean in Nigerian Pidgin?", options: ["Friend", "Boss", "Money", "Food"], correct: 0, time: 20 },
-    { type: "quiz", text: "In what year did Nigeria gain independence?", options: ["1957", "1960", "1963", "1970"], correct: 1, time: 20 },
-    { type: "poll", text: "Which session are you most excited about today?", options: ["Fintech panel", "AI keynote", "Startup pitches", "Networking mixer"], correct: null, time: 15 },
-    { type: "quiz", text: "Which is the longest bridge in Lagos?", options: ["Eko Bridge", "Carter Bridge", "Third Mainland Bridge", "Lekki-Ikoyi Link Bridge"], correct: 2, time: 20 },
-    { type: "quiz", text: "Which Nigerian artist won the Grammy for Best Global Music Album in 2021?", options: ["Wizkid", "Davido", "Tems", "Burna Boy"], correct: 3, time: 20 },
-    { type: "type", text: "Type the word on the big screen", answer: "Jollof", time: 30 },
-    { type: "raffle", text: "Eventpadi tote bag", winners: 1 }
-  ]
-};
+const K = { draft: "ep-live:draft-v2", session: "ep-live:host-session" };
+const isUuid = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v || ""));
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const TYPE_TIMES = TIMES.filter((t) => t >= 10);
@@ -36,7 +24,7 @@ const blankQ = (type = "quiz") => ({
 function normaliseQuiz(raw) {
   const qs = Array.isArray(raw && raw.questions) ? raw.questions : [];
   return {
-    id: (raw && raw.id) || uid(),
+    id: raw && isUuid(raw.id) ? raw.id : null,   // id of the saved game in the account, once saved
     event: String((raw && raw.event) || ""),
     title: String((raw && raw.title) || "Untitled game"),
     questions: (qs.length ? qs : [blankQ()]).slice(0, 100).map((x) => {
@@ -68,12 +56,20 @@ function roundTitle(x) {
 }
 
 const H = {
-  quiz: normaliseQuiz(store.get(K.draft) || SAMPLE),
+  user: null,
+  authReady: false,
+  auth: { mode: "signin", email: "", msg: "", ok: false, busy: false },
+  view: "home",            // auth | reset | home | edit | report (when no game is running)
+  quizzes: null,           // my saved games (dashboard)
+  games: null,             // games I've hosted (live + past)
+  report: null,
+  homeErr: "",
+  search: "",
+  quiz: null,              // game being edited
   editIdx: 0,
-  view: "edit",            // edit | library (when no game is running)
+  save: "saved",           // saved | saving | unsaved | error
   game: null,              // latest host_view()
   session: store.get(K.session), // { game_id, pin, host_token }
-  hostKey: store.get(K.key, sessionStorage) || "",
   err: "",
   busy: false,
   connected: false,
@@ -83,9 +79,49 @@ const H = {
   hostCh: null
 };
 
-const saveDraft = () => store.set(K.draft, H.quiz);
-const library = () => store.get(K.lib) || [];
 const joinBase = () => (CFG.publicUrl || location.origin).replace(/\/+$/, "");
+
+/* ---------- Saving: local copy at once, account copy shortly after ---------- */
+let saveTimer = null, saving = null;
+function saveDraft() {
+  store.set(K.draft, H.quiz);
+  H.save = "unsaved";
+  setSaveLabel();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(cloudSave, 700);
+}
+async function cloudSave() {
+  clearTimeout(saveTimer);
+  if (!H.quiz || !H.user) return true;
+  if (saving) { await saving; if (H.save !== "unsaved") return H.save === "saved"; }
+  const q = H.quiz;
+  const body = JSON.parse(JSON.stringify(q));
+  H.save = "saving"; setSaveLabel();
+  saving = rpc("save_quiz", { p_id: q.id, p_quiz: body });
+  const r = await saving;
+  saving = null;
+  if (r.error) { H.save = "error"; setSaveLabel(); return false; }
+  if (!q.id) q.id = r.id;
+  // Only mark saved if nothing changed while the request was in flight.
+  if (JSON.stringify({ ...H.quiz, id: null }) === JSON.stringify({ ...body, id: null })) { H.save = "saved"; store.del(K.draft); }
+  else { H.save = "unsaved"; saveTimer = setTimeout(cloudSave, 300); }
+  setSaveLabel();
+  return true;
+}
+const SAVE_TEXT = { saved: "All changes saved", saving: "Saving…", unsaved: "Saving…", error: "Couldn't save. Retrying when you edit again" };
+function setSaveLabel() { const el = $("savestate"); if (el) { el.textContent = SAVE_TEXT[H.save]; el.className = "save-state " + H.save; } }
+window.addEventListener("beforeunload", (e) => { if (H.quiz && H.save !== "saved" && H.view === "edit") { e.preventDefault(); e.returnValue = ""; } });
+
+function editQuiz(q, idx = 0) {
+  H.quiz = normaliseQuiz(q);
+  H.editIdx = idx; H.err = ""; H.view = "edit"; H.save = H.quiz.id ? "saved" : "unsaved";
+  render();
+  if (!H.quiz.id) cloudSave();
+}
+async function leaveEditor() {
+  if (H.quiz && H.save !== "saved") await cloudSave();
+  H.view = "home"; H.quiz = null; render(); loadHome();
+}
 
 /* ---------- Rendering ---------- */
 function clearTimers() { H.timers.forEach((t) => { clearTimeout(t); clearInterval(t); }); H.timers = []; }
@@ -95,9 +131,15 @@ function render() {
   const g = H.game;
   let body;
   const ph = g ? shownPhase(g) : null;
-  if (!g) body = H.view === "library" ? libraryView() : setupView();
+  if (!g) {
+    if (!H.authReady) body = `<div class="center-load"><div class="spinner" aria-hidden="true"></div></div>`;
+    else if (!H.user && H.view !== "reset") body = authView();
+    else body = ({ reset: resetView, home: homeView, edit: setupView, report: reportView }[H.view === "edit" && !H.quiz ? "home" : H.view] || homeView)();
+  }
   else body = { lobby: lobbyView, intro: introView, question: questionView, reveal: revealView, leaderboard: boardView, podium: podiumView }[ph]();
-  $("host").innerHTML = topBar() + `<div class="host-body">${body}</div>`;
+  const bare = !g && (!H.user || H.view === "reset");
+  document.body.classList.toggle("auth-page", bare && H.authReady);
+  $("host").innerHTML = (bare ? "" : topBar()) + `<div class="host-body ${g ? "in-game" : "view-" + H.view}">${body}</div>`;
 
   if (!g) return;
   if (ph === "intro") {
@@ -120,9 +162,10 @@ function topBar() {
        ${g.phase === "podium" ? "" : `<button class="btn small ghost" data-act="lock">${g.locked ? "Unlock joining" : "Lock joining"}</button>`}
        <button class="btn small ghost" data-act="fullscreen">Full screen</button>
        <button class="btn small ghost danger" data-act="end">End game</button>`
-    : `<button class="btn small ghost" data-act="fullscreen">Full screen</button>`;
+    : `<span class="user-chip" title="${esc(H.user && H.user.email)}"><span class="avatar" aria-hidden="true">${esc(((firstName(H.user) || (H.user && H.user.email) || "?")[0] || "?").toUpperCase())}</span><span class="user-email">${esc(H.user && H.user.email)}</span></span>
+       <button class="btn small ghost" data-act="signout">Sign out</button>`;
   return `<header class="host-top">
-    <div class="brand"><img class="brand-logo" src="/assets/logo.png" alt="eventpadi"><span class="live-pill">LIVE</span>${conn}</div>
+    <div class="brand"><button class="brand-home" data-act="home" aria-label="My games"><img class="brand-logo" src="/assets/logo.png" alt="eventpadi"></button><span class="live-pill">LIVE</span>${g ? conn : ""}</div>
     <div class="toolbar">${right}</div>
   </header>`;
 }
@@ -138,19 +181,13 @@ function setupView() {
       <span class="qtext" id="qtext-${i}">${esc(roundTitle(x))}</span>
     </button>`).join("");
   return `
-    <div class="page-head">
-      <div><h1>Build your game</h1><p class="note">Mix quiz questions, polls, fastest-fingers and raffles, then open the lobby so attendees can join from their phones.</p></div>
-      <div class="row" style="align-items:flex-end">
-        <div class="field key-field"><label for="hostkey">Host password</label><input class="input" id="hostkey" type="password" data-hostkey value="${esc(H.hostKey)}" autocomplete="current-password" placeholder="Required to host"></div>
-        <button class="btn primary big" data-act="open" ${H.busy ? "disabled" : ""}>${H.busy ? "Opening…" : "Open lobby →"}</button>
+    <div class="editor-head">
+      <button class="btn ghost" data-act="home">← My games</button>
+      <span class="save-state ${H.save}" id="savestate" role="status">${SAVE_TEXT[H.save]}</span>
+      <div class="row">
+        <button class="btn small ghost" data-act="export">Export JSON</button>
+        <button class="btn primary big" data-act="open" ${H.busy ? "disabled" : ""}>${H.busy ? "Opening…" : "Host this game →"}</button>
       </div>
-    </div>
-    <div class="toolbar">
-      <button class="btn small" data-act="library">My games (${library().length})</button>
-      <button class="btn small" data-act="save">Save to my games</button>
-      <button class="btn small ghost" data-act="new">New game</button>
-      <button class="btn small ghost" data-act="import">Import JSON</button>
-      <button class="btn small ghost" data-act="export">Export JSON</button>
     </div>
     ${H.err ? `<div class="err-box" role="alert">${esc(H.err)}</div>` : ""}
     <div class="card event-fields">
@@ -219,18 +256,6 @@ function roundForm(cur) {
     <div class="field"><label for="qtextin">Question</label><input class="input big-q" id="qtextin" data-field="text" maxlength="200" value="${esc(cur.text)}" placeholder="Type your question"></div>
     <div class="form-row">${timeSel(TIMES)}<div></div></div>
     <div class="field"><span class="lbl">${cur.type === "quiz" ? "Answers · tick the correct one · C and D are optional" : "Poll options · C and D are optional"}</span><div class="opts">${opts}</div></div>`;
-}
-
-function libraryView() {
-  const lib = library();
-  const rows = lib.length
-    ? lib.map((x) => `<div class="lib-row"><div><b>${esc(x.title)}</b><span class="note">${esc(x.event || "No event")} · ${x.questions.length} round${x.questions.length === 1 ? "" : "s"}${x.savedAt ? " · saved " + new Date(x.savedAt).toLocaleString() : ""}</span></div>
-        <div class="row"><button class="btn small primary" data-act="load" data-id="${esc(x.id)}">Open</button><button class="btn small ghost danger" data-act="libdel" data-id="${esc(x.id)}">Delete</button></div></div>`).join("")
-    : `<div class="empty">No saved games yet. Use "Save to my games" in the editor.</div>`;
-  return `
-    <div class="row spread"><h2>My games</h2><button class="btn ghost" data-act="editor">Back to editor</button></div>
-    <p class="note">Games are saved in this browser. Export them as JSON to move them to another computer.</p>
-    <div class="library">${rows}</div>`;
 }
 
 function qrSvg(text) {
@@ -493,13 +518,18 @@ function connect() {
 }
 
 function gameOver(reason) {
+  const g = H.game, sess = H.session;
   unlisten(H.gameCh); unlisten(H.hostCh);
   H.gameCh = H.hostCh = null;
   setSession(null);
   H.game = null;
   wake.off();
   if (reason) toast(reason);
+  // A game that actually started goes straight to its report; otherwise back to the editor or dashboard.
+  if (H.user && sess && g && (g.qi >= 0 || g.phase === "podium")) { openReport(sess.game_id); return; }
+  if (!H.quiz && H.view === "edit") H.view = "home";
   render();
+  if (H.view === "home") loadHome();
 }
 
 // Safety net: re-read state regularly, faster while the realtime connection is down.
@@ -510,17 +540,22 @@ async function openLobby() {
   H.err = "";
   H.busy = true;
   render();
-  store.set(K.key, H.hostKey, sessionStorage);
-  const r = await rpc("create_game", { p_quiz: H.quiz, p_host_key: H.hostKey || null });
+  await cloudSave();
+  const r = await rpc("create_game", { p_quiz: H.quiz, p_quiz_id: H.quiz.id });
   H.busy = false;
+  if (r.auth) { await sb.auth.signOut(); return; }
   if (r.error) {
     H.err = r.error;
     if (Number.isInteger(r.index)) H.editIdx = r.index;
     render();
-    if (r.need_key && $("hostkey")) $("hostkey").focus();
     return;
   }
-  setSession({ game_id: r.game_id, pin: r.pin, host_token: r.host_token });
+  startHosting({ game_id: r.game_id, pin: r.pin, host_token: r.host_token });
+}
+
+async function startHosting(s) {
+  if (H.view !== "edit" || !H.quiz) H.view = "home";
+  setSession(s);
   connect();
   await refresh();
 }
@@ -563,23 +598,89 @@ $("importFile").addEventListener("change", async (e) => {
   if (!f) return;
   try {
     const data = JSON.parse(await f.text());
-    H.quiz = normaliseQuiz({ ...data, id: uid() });
-    H.editIdx = 0; H.view = "edit"; H.err = "";
-    saveDraft(); render();
+    if (!Array.isArray(data.questions)) throw new Error("bad");
+    editQuiz({ ...data, id: null });
     toast(`Imported "${H.quiz.title}"`);
   } catch {
     toast("That file isn't a valid game JSON.", true);
   }
 });
 
+const findQuiz = async (id) => {
+  const r = await rpc("get_quiz", { p_id: id });
+  if (r.error) { toast(r.error, true); return null; }
+  return r;
+};
+
 /* ---------- Events ---------- */
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-act]");
   if (!b || b.disabled) return;
   const a = b.dataset.act;
-  const qs = H.quiz.questions;
+  const qs = H.quiz ? H.quiz.questions : [];
   const edited = () => { saveDraft(); render(); };
   switch (a) {
+    /* account + dashboard */
+    case "authmode": H.auth.mode = b.dataset.mode; H.auth.msg = ""; render(); ($("au-name") || $("au-email")).focus(); break;
+    case "signout":
+      if (H.quiz && H.save !== "saved") await cloudSave();
+      await sb.auth.signOut(); H.quiz = null; break;
+    case "home":
+      if (H.game) break;
+      if (H.view === "edit") await leaveEditor(); else { H.view = "home"; render(); loadHome(); }
+      break;
+    case "reloadhome": loadHome(); break;
+    case "newgame": editQuiz({ title: "Untitled game", questions: [] }); if ($("qt")) $("qt").select(); break;
+    case "template": {
+      const t = TEMPLATES[+b.dataset.i];
+      editQuiz(JSON.parse(JSON.stringify(t.quiz)));
+      toast(`"${t.quiz.title}" added to My games. Edit it to make it yours.`);
+      break;
+    }
+    case "editq": { const q = await findQuiz(b.dataset.id); if (q) editQuiz(q); break; }
+    case "hostq": {
+      b.disabled = true;
+      const q = await findQuiz(b.dataset.id);
+      if (!q) { b.disabled = false; break; }
+      H.quiz = normaliseQuiz(q); H.save = "saved"; H.view = "edit"; H.editIdx = 0;
+      await openLobby();
+      break;
+    }
+    case "dupq": {
+      const q = await findQuiz(b.dataset.id);
+      if (!q) break;
+      const r = await rpc("save_quiz", { p_id: null, p_quiz: { ...q, id: null, title: (q.title || "Untitled game") + " (copy)" } });
+      if (r.error) toast(r.error, true); else { toast("Copy created"); loadHome(); }
+      break;
+    }
+    case "delq":
+      if (!(await popup({ title: "Delete this game?", message: `"${b.dataset.name || "Untitled game"}" will be removed from My games. Reports from times you hosted it are kept.`, confirmLabel: "Delete", tone: "danger" }))) return;
+      await rpc("delete_quiz", { p_id: b.dataset.id }); toast("Game deleted"); loadHome(); break;
+    case "resume": {
+      const g = (H.games || []).find((x) => x.id === b.dataset.id);
+      if (g && g.host_token) startHosting({ game_id: g.id, pin: g.pin, host_token: g.host_token });
+      break;
+    }
+    case "endlive": {
+      const g = (H.games || []).find((x) => x.id === b.dataset.id);
+      if (!g || !(await popup({ title: "End this game?", message: `"${g.title}" (PIN ${g.pin}) stops for everyone in it.`, confirmLabel: "End game", tone: "danger" }))) return;
+      const r = await rpc("host_action", { p_game: g.id, p_token: g.host_token, p_action: "end", p_arg: {} });
+      if (r.error) toast(r.error, true); else toast("Game ended.");
+      loadHome(); break;
+    }
+    case "report": openReport(b.dataset.id); break;
+    case "forget": {
+      if (!(await popup({ title: "Delete this report?", message: "The results and player list for this game will be permanently deleted.", confirmLabel: "Delete report", tone: "danger" }))) return;
+      const r = await rpc("forget_game", { p_game: b.dataset.id });
+      if (r.error) toast(r.error, true);
+      loadHome(); break;
+    }
+    case "importlegacy": b.disabled = true; importLegacy(); break;
+    case "dismisslegacy": store.set("ep-live:legacy-done", true); render(); break;
+    case "reportcsv": exportReportCsv(); break;
+    case "print": window.print(); break;
+
+    /* editor */
     case "pick": H.editIdx = +b.dataset.i; render(); break;
     case "add": qs.push(blankQ(b.dataset.type)); H.editIdx = qs.length - 1; edited(); ($("answerin") || $("qtextin")).focus(); break;
     case "settype": {
@@ -591,39 +692,23 @@ document.addEventListener("click", async (e) => {
       cur.type = t; cur.correct = fresh.correct;
       edited(); break;
     }
-    case "redraw":
-      if (await popup({ title: `Redraw instead of ${b.dataset.name}?`, message: "Use this if the winner isn't in the room. A new winner is drawn at random and this person loses the prize.", confirmLabel: "Redraw", tone: "danger", icon: "↻" })) act("redraw", { player_id: b.dataset.id });
-      break;
     case "dup": qs.splice(H.editIdx + 1, 0, JSON.parse(JSON.stringify(qs[H.editIdx]))); H.editIdx++; edited(); break;
     case "del": qs.splice(H.editIdx, 1); H.editIdx = Math.max(0, H.editIdx - 1); edited(); break;
     case "up": case "down": {
       const j = H.editIdx + (a === "up" ? -1 : 1);
       [qs[H.editIdx], qs[j]] = [qs[j], qs[H.editIdx]]; H.editIdx = j; edited(); break;
     }
-    case "new":
-      if (!(await popup({ title: "Start a new game?", message: "This clears the editor. Save the current game to My games first if you want to keep it.", confirmLabel: "Start new game", icon: "+" }))) return;
-      H.quiz = normaliseQuiz({ title: "", event: H.quiz.event, questions: [] }); H.editIdx = 0; H.err = ""; edited(); break;
-    case "save": {
-      const lib = library().filter((x) => x.id !== H.quiz.id);
-      lib.unshift({ ...JSON.parse(JSON.stringify(H.quiz)), savedAt: Date.now() });
-      store.set(K.lib, lib); render(); toast("Saved to My games"); break;
-    }
-    case "library": H.view = "library"; render(); break;
-    case "editor": H.view = "edit"; render(); break;
-    case "load": {
-      const x = library().find((y) => y.id === b.dataset.id);
-      if (x) { H.quiz = normaliseQuiz(x); H.editIdx = 0; H.view = "edit"; H.err = ""; edited(); }
-      break;
-    }
-    case "libdel":
-      if (!(await popup({ title: "Delete this game?", message: `"${(library().find((y) => y.id === b.dataset.id) || {}).title || "This game"}" will be removed from My games. This can't be undone.`, confirmLabel: "Delete", tone: "danger" }))) return;
-      store.set(K.lib, library().filter((y) => y.id !== b.dataset.id)); render(); break;
     case "import": $("importFile").click(); break;
     case "export": {
       const { id, ...rest } = H.quiz;
       download(`${slug(H.quiz.title)}.json`, JSON.stringify(rest, null, 2), "application/json"); break;
     }
     case "open": openLobby(); break;
+
+    /* live game */
+    case "redraw":
+      if (await popup({ title: `Redraw instead of ${b.dataset.name}?`, message: "Use this if the winner isn't in the room. A new winner is drawn at random and this person loses the prize.", confirmLabel: "Redraw", tone: "danger", icon: "↻" })) act("redraw", { player_id: b.dataset.id });
+      break;
     case "start": b.disabled = true; act("start"); break;
     case "next": b.disabled = true; act("next"); break;
     case "reveal": act("reveal"); break;
@@ -646,10 +731,24 @@ document.addEventListener("click", async (e) => {
   }
 });
 
+document.addEventListener("submit", (e) => {
+  const f = e.target.closest("form[data-form]");
+  if (!f) return;
+  e.preventDefault();
+  submitAuth(f);
+});
+
 document.addEventListener("input", (e) => {
   const t = e.target;
   if (H.game) return;
-  if (t.dataset.hostkey !== undefined) { H.hostKey = t.value; return; }
+  if (t.dataset.search !== undefined) {
+    H.search = t.value;
+    const pos = t.selectionStart;
+    render();
+    const s = $("search"); if (s) { s.focus(); s.setSelectionRange(pos, pos); }
+    return;
+  }
+  if (!H.quiz || H.view !== "edit") return;
   const cur = H.quiz.questions[H.editIdx];
   if (t.dataset.meta) H.quiz[t.dataset.meta] = t.value;
   else if (t.dataset.field === "text" || t.dataset.field === "answer") {
@@ -663,7 +762,7 @@ document.addEventListener("input", (e) => {
 
 document.addEventListener("change", (e) => {
   const t = e.target;
-  if (H.game) return;
+  if (H.game || !H.quiz || H.view !== "edit") return;
   const cur = H.quiz.questions[H.editIdx];
   if (t.dataset.correct) cur.correct = +t.dataset.correct;
   else if (t.dataset.field === "time" || t.dataset.field === "winners") { cur[t.dataset.field] = +t.value; render(); }
@@ -681,5 +780,12 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && H.game.phase === "lobby" && H.game.player_count) act("start");
 });
 
-if (H.session) { connect(); refresh(); }
-render();
+/* ---------- Start ---------- */
+(function init() {
+  // An unsaved local copy (e.g. the tab closed mid-edit) reopens in the editor.
+  const draft = store.get(K.draft);
+  if (draft && Array.isArray(draft.questions)) { H.quiz = normaliseQuiz(draft); H.view = "edit"; H.save = "unsaved"; }
+  if (H.session) { connect(); refresh(); }
+  render();
+  initAuth();
+})();

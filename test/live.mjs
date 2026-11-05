@@ -34,9 +34,16 @@ try {
     { type: "quiz", text: "2+2?", options: ["3", "4"], correct: 1, time: 5 },
     { type: "poll", text: "Fav?", options: ["A", "B", "C"], time: 5 }
   ] };
-  assert.equal((await rpc("create_game", { p_quiz: quiz, p_host_key: "wrong" })).need_key, true);
-  const g = await rpc("create_game", { p_quiz: quiz, p_host_key: env.HOST_KEY });
-  assert.ok(g.pin, JSON.stringify(g));
+  // Only signed-in organisers can open a game.
+  assert.ok((await sb.rpc("create_game", { p_quiz: quiz })).error, "anon must not create games");
+  const email = process.env.TEST_HOST_EMAIL || env.TEST_HOST_EMAIL, password = process.env.TEST_HOST_PASSWORD || env.TEST_HOST_PASSWORD;
+  assert.ok(email && password, "Set TEST_HOST_EMAIL and TEST_HOST_PASSWORD (a confirmed organiser account)");
+  const hostSb = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, { auth: { persistSession: false } });
+  const login = await hostSb.auth.signInWithPassword({ email, password });
+  assert.ok(!login.error, "sign in: " + (login.error && login.error.message));
+  const hrpc = async (fn, args) => { const { data, error } = await hostSb.rpc(fn, args); if (error) throw new Error(fn + ": " + error.message); return data; };
+  const saved = await hrpc("save_quiz", { p_id: null, p_quiz: quiz });
+  const g = await hrpc("create_game", { p_quiz: quiz, p_quiz_id: saved.id });  assert.ok(g.pin, JSON.stringify(g));
   const H = { p_game: g.game_id, p_token: g.host_token };
 
   const game = listen("game:" + g.game_id), host = listen("host:" + g.host_token);
@@ -75,6 +82,16 @@ try {
   await rpc("host_action", { ...H, p_action: "end" });
   await game.until((m) => m.event === "state" && m.payload.phase === "ended");
   sb.removeAllChannels();
+
+  // Organiser history and report; then tidy up the test data.
+  const mine = await hrpc("my_games", { p_limit: 5 });
+  assert.equal(mine.games[0].id, g.game_id);
+  const rep = await hrpc("game_report", { p_game: g.game_id });
+  assert.equal(rep.players[0].name, "Ada");
+  assert.equal(rep.rounds.length, 2);
+  assert.ok((await sb.rpc("game_report", { p_game: g.game_id })).error, "anon must not read reports");
+  await hrpc("forget_game", { p_game: g.game_id });
+  await hrpc("delete_quiz", { p_id: saved.id });
   ok = true;
   console.log("LIVE TEST PASSED");
 } catch (e) {

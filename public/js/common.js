@@ -105,8 +105,12 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 if (!CFG.supabaseUrl || !CFG.supabaseAnonKey) {
   document.addEventListener("DOMContentLoaded", () => toast("Missing Supabase config (public/config.js).", true));
 }
+// Organisers stay signed in on the host page; attendee phones never sign in.
+const IS_HOST = document.body.classList.contains("host-page");
 const sb = window.supabase.createClient(CFG.supabaseUrl || "http://invalid.local", CFG.supabaseAnonKey || "missing", {
-  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+  auth: IS_HOST
+    ? { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: "ep-live:auth" }
+    : { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
 });
 
 /* Server clock: deadlines come from the database, so every screen counts down
