@@ -3,5 +3,5 @@
 window.EP_CONFIG = {
   supabaseUrl: "https://pziusezygbfbbblhxunw.supabase.co",
   supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB6aXVzZXp5Z2JmYmJibGh4dW53Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM4NzkyNTgsImV4cCI6MjEwOTQ1NTI1OH0.1fUCzCsiow6S9Jw_GJ16iUCu09_L8DM9raVkroxu7mA",
-  publicUrl: ""
+  publicUrl: "https://eventpadi-live.vercel.app"
 };
