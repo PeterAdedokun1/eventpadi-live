@@ -70,7 +70,34 @@ const firstName = (u) => ((u && u.user_metadata && u.user_metadata.full_name) ||
 const typePills = (types) => (types || []).map((t) => `<span class="pill t-${esc(t)}">${esc(roundLabel(t))}</span>`).join("");
 
 /* ---------- Auth ---------- */
+/* Single sign-on: Eventpadi sends organisers to /host#sso=<pass>. The pass is exchanged
+   for a session by the sso Edge Function, so they never see a sign-in form. */
+async function ssoSignIn() {
+  const m = location.hash.match(/[#&]sso=([^&]+)/);
+  if (!m) return;
+  history.replaceState(null, "", location.pathname + location.search);   // don't leave the pass in the address bar
+  H.ssoPending = true;
+  try {
+    const res = await fetch(`${CFG.supabaseUrl}/functions/v1/sso`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: CFG.supabaseAnonKey, Authorization: `Bearer ${CFG.supabaseAnonKey}` },
+      body: JSON.stringify({ token: decodeURIComponent(m[1]) })
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || !d.access_token) throw new Error(d.error || "Sign-in failed");
+    const { error } = await sb.auth.setSession({ access_token: d.access_token, refresh_token: d.refresh_token });
+    if (error) throw error;
+    if (d.back) store.set("ep-live:back", d.back);
+  } catch (e) {
+    reportError("sso sign-in failed", e && e.message);
+    H.auth.ok = false;
+    H.auth.msg = "We couldn't sign you in from Eventpadi automatically. Go back to Eventpadi and open Live Games again, or sign in below.";
+  }
+  H.ssoPending = false;
+}
+
 async function initAuth() {
+  await ssoSignIn();
   const { data } = await sb.auth.getSession();
   setUser(data.session ? data.session.user : null);
   sb.auth.onAuthStateChange((event, session) => {

@@ -120,7 +120,25 @@ create table if not exists public.client_errors (
 );
 create index if not exists client_errors_time on public.client_errors (created_at desc);
 
+-- Single sign-on from the Eventpadi platform (see supabase/functions/sso).
+-- One row per Eventpadi user who has come over; links their Eventpadi id to their organiser account.
+create table if not exists public.sso_links (
+  provider     text not null default 'eventpadi',
+  external_id  text not null,
+  user_id      uuid not null references auth.users (id) on delete cascade,
+  created_at   timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  primary key (provider, external_id)
+);
+-- Passes already used (each pass works once).
+create table if not exists public.sso_used (
+  jti     text primary key,
+  used_at timestamptz not null default now()
+);
+
 alter table public.settings     enable row level security;
+alter table public.sso_links    enable row level security;
+alter table public.sso_used     enable row level security;
 alter table public.client_errors enable row level security;
 alter table public.games        enable row level security;
 alter table public.players      enable row level security;
@@ -337,6 +355,7 @@ begin
   delete from public.games where phase = 'ended' and started_at is null and updated_at < now() - interval '1 day';
   delete from public.pin_attempts where minute < now() - interval '10 minutes';
   delete from public.client_errors where created_at < now() - interval '14 days';
+  delete from public.sso_used where used_at < now() - interval '1 day';
 end $$;
 
 /* ---------------- Host API ---------------- */
@@ -957,6 +976,12 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+/* ---------------- Single sign-on helper (service role only) ---------------- */
+create or replace function public._sso_user_by_email(p_email text) returns uuid
+language sql stable security definer set search_path = public, auth as $$
+  select id from auth.users where lower(email) = lower(p_email) limit 1
+$$;
+
 /* ---------------- Permissions ---------------- */
 
 revoke all on all tables in schema public from anon, authenticated;
@@ -982,6 +1007,10 @@ grant execute on function
   public.game_report(uuid),
   public.forget_game(uuid)
 to authenticated;
+do $g$ begin
+  grant execute on function public._sso_user_by_email(text) to service_role;
+exception when undefined_object then null;   -- no service_role outside Supabase (local tests)
+end $g$;
 
 /* ---------------- Question images (Supabase Storage) ---------------- */
 -- Public bucket; organisers can upload only into a folder named after their user id.

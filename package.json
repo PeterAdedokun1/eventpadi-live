@@ -7,7 +7,8 @@
     "setup": "node scripts/setup-supabase.mjs",
     "test": "node test/live.mjs",
     "deploy": "npx vercel deploy --prod",
-    "load": "node test/load.mjs"
+    "load": "node test/load.mjs",
+    "test:sso": "node test/sso.mjs"
   },
   "private": true,
   "engines": {

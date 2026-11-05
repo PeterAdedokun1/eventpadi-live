@@ -94,6 +94,25 @@ const hostKey = env("HOST_KEY") || secret(9);
 await query(`insert into public.settings (key, value) values ('host_key', '${hostKey.replace(/'/g, "''")}')
              on conflict (key) do update set value = excluded.value`);
 
+// Single sign-on from the Eventpadi platform: shared secret + the sso Edge Function.
+const ssoSecret = env("EVENTPADI_SSO_SECRET") || secret(32);
+await api("POST", `/projects/${ref}/secrets`, [{ name: "EVENTPADI_SSO_SECRET", value: ssoSecret }]);
+writeEnv({ EVENTPADI_SSO_SECRET: ssoSecret });
+{
+  const dir = path.join(ROOT, "supabase", "functions", "sso");
+  const form = new FormData();
+  form.append("metadata", JSON.stringify({ entrypoint_path: "index.ts", name: "sso", verify_jwt: false }));
+  form.append("file", new Blob([fs.readFileSync(path.join(dir, "index.ts"))], { type: "application/typescript" }), "index.ts");
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/functions/deploy?slug=sso`, {
+      method: "POST", headers: { Authorization: `Bearer ${env("SUPABASE_ACCESS_TOKEN")}` }, body: form
+    });
+    if (res.ok) { console.log("Deployed Edge Function sso."); break; }
+    if (attempt >= 4) throw new Error(`Deploying the sso function failed: ${res.status} ${await res.text()}`);
+    await sleep(5000);
+  }
+}
+
 const keys = await api("GET", `/projects/${ref}/api-keys?reveal=true`);
 const anon = keys.find((k) => k.name === "anon") || keys.find((k) => k.type === "publishable");
 if (!anon) throw new Error("Couldn't find the project's anon/publishable key.");

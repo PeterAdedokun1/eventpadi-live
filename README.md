@@ -51,6 +51,16 @@ Engagement:
 - **Sound.** The projector plays lobby music, a thinking loop, countdown ticks, reveal chimes and fanfares, all synthesised in the browser (no audio files). Sound starts after the first click on the page and can be muted.
 - **Live reactions.** Phones can send 👏 😂 🔥 😮 ❤️ 🎉 in the lobby and between rounds; they float up the big screen. Reactions go straight to the host over Realtime's HTTP endpoint (phones don't receive each other's), limited to one every 0.8 s per phone.
 
+## Single sign-on from Eventpadi
+
+Organisers coming from the Eventpadi platform don't sign in again. Eventpadi's backend signs a short-lived pass (an HS256 JWT, using the shared secret `EVENTPADI_SSO_SECRET`) and redirects to `/host#sso=<pass>`. The `sso` Edge Function (`supabase/functions/sso`) checks the pass and signs the organiser in. On the first visit it creates their account; after that it finds it again by their Eventpadi user ID. No email is sent.
+
+- Each pass works once (`sso_used`) and for at most 5 minutes.
+- Accounts are linked by Eventpadi user ID (`sso_links`), so email changes are fine.
+- An existing directly-created account is linked only if the pass says `email_verified: true`.
+
+Instructions and code for the Eventpadi backend (Node, PHP, Python, C#) are in [docs/eventpadi-sso.md](docs/eventpadi-sso.md). `npm run setup` creates the secret, stores it as a function secret and deploys the function. `npm run test:sso` tests it end to end. Direct email sign-in remains available as a fallback.
+
 ## Set up and deploy
 
 You need Node 18+ and a Supabase account.
@@ -132,6 +142,9 @@ scripts/setup-supabase.mjs                 Creates the project, applies SQL, wri
 scripts/dev.js                             Local static server
 test/live.mjs                              End-to-end test against the real Supabase project
 test/load.mjs                              Load test: many simulated phones in one game
+test/sso.mjs                               Single sign-on test (valid, replayed, expired, forged passes)
+supabase/functions/sso/                    Edge Function: exchanges an Eventpadi pass for a session
+docs/eventpadi-sso.md                      Guide for Eventpadi's backend developers
 vercel.json                                Static hosting, routes, security headers
 ```
 

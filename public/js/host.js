@@ -144,7 +144,7 @@ function render() {
   let body;
   const ph = g ? shownPhase(g) : null;
   if (!g) {
-    if (!H.authReady) body = `<div class="center-load"><div class="spinner" aria-hidden="true"></div></div>`;
+    if (!H.authReady) body = `<div class="center-load"><div class="spinner" aria-hidden="true"></div>${/[#&]sso=/.test(location.hash) || H.ssoPending ? `<p class="note">Signing you in from Eventpadi…</p>` : ""}</div>`;
     else if (!H.user && H.view !== "reset") body = authView();
     else body = ({ reset: resetView, home: homeView, edit: setupView, report: reportView }[H.view === "edit" && !H.quiz ? "home" : H.view] || homeView)();
   }
@@ -207,7 +207,8 @@ function topBar() {
        <button class="btn small ghost" data-act="fullscreen">Full screen</button>
        <button class="btn small ghost danger" data-act="end">End game</button>`
     : `<span class="user-chip" title="${esc(H.user && H.user.email)}"><span class="avatar" aria-hidden="true">${esc(((firstName(H.user) || (H.user && H.user.email) || "?")[0] || "?").toUpperCase())}</span><span class="user-email">${esc(H.user && H.user.email)}</span></span>
-       <button class="btn small ghost" data-act="signout">Sign out</button>`;
+       <button class="btn small ghost" data-act="signout">Sign out</button>
+       ${store.get("ep-live:back") ? `<a class="btn small" href="${esc(store.get("ep-live:back"))}">← Back to Eventpadi</a>` : ""}`;
   return `<header class="host-top">
     <div class="brand">${g && g.theme && g.theme.logo ? themeLogo(g.theme, "event-logo top") + `<span class="powered">with <img src="/assets/logo.png" alt="eventpadi"></span>` : `<button class="brand-home" data-act="home" aria-label="My games"><img class="brand-logo" src="/assets/logo.png" alt="eventpadi"></button>`}<span class="live-pill">LIVE</span>${g ? conn : ""}</div>
     <div class="toolbar">${right}</div>
@@ -746,7 +747,7 @@ document.addEventListener("click", async (e) => {
     case "authmode": H.auth.mode = b.dataset.mode; H.auth.msg = ""; render(); ($("au-name") || $("au-email")).focus(); break;
     case "signout":
       if (H.quiz && H.save !== "saved") await cloudSave();
-      await sb.auth.signOut(); H.quiz = null; break;
+      await sb.auth.signOut(); store.del("ep-live:back"); H.quiz = null; break;
     case "home":
       if (H.game) break;
       if (H.view === "edit") await leaveEditor(); else { H.view = "home"; render(); loadHome(); }
