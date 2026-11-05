@@ -39,7 +39,15 @@ The final screen shows the podium (when the game has scored rounds) and every ra
 
 Scoring: a correct quiz answer earns 500 to 1000 points depending on speed, plus 100 per consecutive correct answer (up to +500). Fastest fingers earns 500 to 1000 for speed. Polls and raffles are not scored. Fastest-fingers words and raffle winners are never sent to phones while a round is open.
 
-Host controls: kick a player (click their name in the lobby), lock or unlock joining, end the question early, end the game, full screen, and a CSV download of results. Space, Enter or → advances from the reveal and scoreboard screens.
+Host controls: kick a player (click their name in the lobby), lock or unlock joining, +10 seconds on an open round, end the question early, end the game, sound on/off, full screen, and a CSV download of results. Space, Enter or → advances from the reveal and scoreboard screens.
+
+Engagement:
+- **Avatars.** Players pick an emoji avatar when they join; it shows in the lobby, scoreboards, raffle draws and on the podium.
+- **Nickname filter.** Offensive nicknames are refused (whole-word match, so real names like "Dickson" are fine).
+- **Images.** Quiz and poll questions can have an image, shown on the big screen. Images are shrunk in the browser and stored in the `quiz-images` Storage bucket (organisers can only upload to their own folder).
+- **True / False** preset for quiz questions.
+- **Sound.** The projector plays lobby music, a thinking loop, countdown ticks, reveal chimes and fanfares, all synthesised in the browser (no audio files). Sound starts after the first click on the page and can be muted.
+- **Live reactions.** Phones can send 👏 😂 🔥 😮 ❤️ 🎉 in the lobby and between rounds; they float up the big screen. Reactions go straight to the host over Realtime's HTTP endpoint (phones don't receive each other's), limited to one every 0.8 s per phone.
 
 ## Set up and deploy
 

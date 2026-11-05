@@ -10,6 +10,10 @@ const ROUND = {
   raffle: { label: "Raffle",          icon: "★" }
 };
 const roundLabel = (t) => (ROUND[t] || ROUND.quiz).label;
+// Kept in sync with public._avatars() in the database.
+const AVATARS = ["🦁", "🐯", "🐼", "🦊", "🐸", "🐵", "🦄", "🐙", "🐬", "🦋", "🐝", "🐢", "🦉", "🐧", "🐨", "🐰", "🐶", "🐱", "🌟", "🔥", "⚡", "🎉", "🎧", "🚀"];
+const REACTIONS = ["👏", "😂", "🔥", "😮", "❤️", "🎉"];
+const av = (a) => (a && AVATARS.includes(a) ? `<span class="av" aria-hidden="true">${a}</span>` : "");
 const CFG = window.EP_CONFIG || {};
 
 const $ = (id) => document.getElementById(id);

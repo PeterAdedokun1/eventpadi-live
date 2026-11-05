@@ -521,6 +521,37 @@ section { display: grid; gap: 14px; }
   .game-card, .tile, .round-card, .table-card { box-shadow: none; }
 }
 
+/* ---------- Avatars, reactions, images ---------- */
+.av { display: inline-block; margin-right: 8px; font-size: 1.15em; line-height: 1; vertical-align: -0.1em; }
+.av-picked { font-size: 54px; line-height: 1; margin: 2px auto 0; animation: pop 0.3s ease-out; }
+.av-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+.av-btn { border: 1.5px solid var(--line); background: var(--surface-2); border-radius: 12px; font-size: 22px; padding: 6px 0; line-height: 1.2; transition: transform 0.1s, border-color 0.1s; }
+.av-btn[aria-checked="true"] { border-color: var(--accent); background: var(--accent-50); transform: scale(1.08); box-shadow: 0 0 0 3px var(--accent-100); }
+.app-phone .av-btn { width: auto; padding: 6px 0; font-size: 22px; border-radius: 12px; box-shadow: none; }
+.lobby-av { font-size: 84px; line-height: 1; animation: pop 0.4s ease-out, bob 2.4s ease-in-out 0.4s infinite; }
+@keyframes bob { 50% { transform: translateY(-8px); } }
+.winner-av { font-size: 56px; line-height: 1; }
+.podium-av { font-size: 46px; line-height: 1; }
+.player-chip .av { margin-right: 6px; }
+
+.react-bar { display: flex; justify-content: center; gap: 8px; padding: 10px 0 2px; flex-wrap: wrap; }
+.app-phone .react-btn { width: 50px; height: 50px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); font-size: 24px; box-shadow: var(--shadow-sm); }
+.react-btn.sent { animation: reactpop 0.4s ease-out; }
+@keyframes reactpop { 40% { transform: scale(1.35); } }
+.reactions { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 30; }
+.reactions span { position: absolute; bottom: -60px; line-height: 1; animation: floatup 3s cubic-bezier(0.25, 0.6, 0.4, 1) forwards; filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.15)); }
+@keyframes floatup {
+  0% { transform: translate(0, 0) scale(0.6); opacity: 0; }
+  12% { opacity: 1; transform: translate(0, -12vh) scale(1.1); }
+  100% { transform: translate(var(--drift, 0), -88vh) scale(1); opacity: 0; }
+}
+
+.qmid.has-img { grid-template-columns: 140px minmax(0, 1fr) 140px; }
+.q-image { justify-self: center; max-width: 100%; max-height: 36vh; border-radius: 18px; box-shadow: var(--shadow); object-fit: contain; background: var(--surface); animation: pop 0.35s ease-out; }
+.img-drop { border-style: dashed; justify-content: center; padding: 18px; box-shadow: none; background: var(--surface-2); color: var(--muted); }
+.img-preview { display: flex; align-items: center; gap: 14px; }
+.img-preview img { height: 96px; max-width: 220px; object-fit: cover; border-radius: 12px; border: 1px solid var(--line); }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 960px) {
   .editor { grid-template-columns: 1fr; }

@@ -38,6 +38,7 @@ function normaliseQuiz(raw) {
         correct: type === "quiz" ? (Number.isInteger(x.correct) && x.correct < 4 ? x.correct : 0) : null,
         time: (type === "type" ? TYPE_TIMES : TIMES).includes(Number(x.time)) ? Number(x.time) : type === "type" ? 30 : 20,
         answer: String(x.answer || ""),
+        image: (type === "quiz" || type === "poll") && typeof x.image === "string" && /^https:\/\//.test(x.image) ? x.image : "",
         winners: WINNERS.includes(Number(x.winners)) ? Number(x.winners) : 1
       };
     })
@@ -150,6 +151,36 @@ function render() {
   }
   if (ph === "question") { startTimer(); if (g.question.type === "raffle") startSpin(); }
   if (ph === "reveal") requestAnimationFrame(() => $("host").querySelectorAll(".bar").forEach((b) => (b.style.height = b.dataset.h)));
+  phaseSounds(g, ph);
+}
+
+/* Music and effects follow what's on screen. */
+let lastSoundKey = "";
+function phaseSounds(g, ph) {
+  const key = ph + ":" + g.qi;
+  sound.music(ph === "lobby" ? "lobby" : ph === "question" && g.question.type !== "raffle" ? "think" : null);
+  if (key === lastSoundKey) return;
+  const first = !lastSoundKey;
+  lastSoundKey = key;
+  if (first) return;   // no effect when the page first loads mid-game
+  if (ph === "intro") sound.play(g.qi === 0 ? "start" : "whoosh");
+  else if (ph === "reveal") sound.play(g.question.type === "raffle" ? "fanfare" : "reveal");
+  else if (ph === "leaderboard") sound.play("whoosh");
+  else if (ph === "podium") sound.play("fanfare");
+}
+
+/* Live reactions from phones float up the big screen. */
+function spawnReaction(e) {
+  if (!REACTIONS.includes(e) || !H.game) return;
+  const box = $("reactions");
+  if (!box || box.childElementCount > 40) return;
+  const el = document.createElement("span");
+  el.textContent = e;
+  el.style.left = (4 + Math.random() * 92) + "%";
+  el.style.setProperty("--drift", (Math.random() * 80 - 40) + "px");
+  el.style.fontSize = (34 + Math.random() * 26) + "px";
+  box.appendChild(el);
+  setTimeout(() => el.remove(), 3200);
 }
 
 function topBar() {
@@ -160,6 +191,7 @@ function topBar() {
     ? `<span class="chip accent">PIN ${esc(g.pin)}</span>
        <span class="chip">${g.player_count} player${g.player_count === 1 ? "" : "s"}</span>
        ${g.phase === "podium" ? "" : `<button class="btn small ghost" data-act="lock">${g.locked ? "Unlock joining" : "Lock joining"}</button>`}
+       <button class="btn small ghost" data-act="mute" aria-pressed="${sound.muted}" title="${sound.muted ? "Turn sound on" : "Mute sound"}">${sound.muted ? "🔇 Sound off" : "🔊 Sound on"}</button>
        <button class="btn small ghost" data-act="fullscreen">Full screen</button>
        <button class="btn small ghost danger" data-act="end">End game</button>`
     : `<span class="user-chip" title="${esc(H.user && H.user.email)}"><span class="avatar" aria-hidden="true">${esc(((firstName(H.user) || (H.user && H.user.email) || "?")[0] || "?").toUpperCase())}</span><span class="user-email">${esc(H.user && H.user.email)}</span></span>
@@ -254,8 +286,14 @@ function roundForm(cur) {
     </div>`).join("");
   return `
     <div class="field"><label for="qtextin">Question</label><input class="input big-q" id="qtextin" data-field="text" maxlength="200" value="${esc(cur.text)}" placeholder="Type your question"></div>
+    <div class="field"><span class="lbl">Image (optional) · shown on the big screen</span>
+      ${cur.image
+        ? `<div class="img-preview"><img src="${esc(cur.image)}" alt=""><button class="btn small ghost danger" data-act="imgremove">Remove image</button></div>`
+        : `<button class="btn img-drop" data-act="imgpick" ${H.uploading ? "disabled" : ""}>${H.uploading ? "Uploading…" : "🖼 Add an image"}</button>`}
+    </div>
     <div class="form-row">${timeSel(TIMES)}<div></div></div>
-    <div class="field"><span class="lbl">${cur.type === "quiz" ? "Answers · tick the correct one · C and D are optional" : "Poll options · C and D are optional"}</span><div class="opts">${opts}</div></div>`;
+    <div class="field"><div class="row spread"><span class="lbl">${cur.type === "quiz" ? "Answers · tick the correct one · C and D are optional" : "Poll options · C and D are optional"}</span>
+      ${cur.type === "quiz" ? `<button class="btn small ghost" data-act="truefalse">Make it True / False</button>` : ""}</div><div class="opts">${opts}</div></div>`;
 }
 
 function qrSvg(text) {
@@ -271,7 +309,7 @@ function lobbyView() {
   const g = H.game;
   const players = g.players || [];
   const chips = players.length
-    ? players.map((p) => `<button class="player-chip kick" data-act="kick" data-id="${esc(p.id)}" data-name="${esc(p.name)}" title="Remove ${esc(p.name)}">${esc(p.name)}</button>`).join("")
+    ? players.map((p) => `<button class="player-chip kick" data-act="kick" data-id="${esc(p.id)}" data-name="${esc(p.name)}" title="Remove ${esc(p.name)}">${av(p.avatar)}${esc(p.name)}</button>`).join("")
     : `<div class="empty">Waiting for attendees to join…</div>`;
   return `
     <div class="join-bar live">
@@ -331,7 +369,7 @@ function questionView() {
   }
   if (q.type === "type") {
     return `
-      <div class="qhead"><span class="chip">${g.qi + 1} / ${g.total} · Fastest fingers</span><button class="btn ghost" data-act="reveal">End round</button></div>
+      <div class="qhead"><span class="chip">${g.qi + 1} / ${g.total} · Fastest fingers</span><div class="row"><button class="btn ghost" data-act="extend">+10 seconds</button><button class="btn ghost" data-act="reveal">End round</button></div></div>
       <div class="kicker center-text">Type this on your phone</div>
       <div class="word-display" style="--len:${Math.max(4, (g.word || "").length)}">${esc(g.word || "")}</div>
       <div class="qmid">
@@ -341,11 +379,11 @@ function questionView() {
       </div>`;
   }
   return `
-    <div class="qhead"><span class="chip">${g.qi + 1} / ${g.total}${q.type === "poll" ? " · Poll" : ""}</span><button class="btn ghost" data-act="reveal">End question</button></div>
+    <div class="qhead"><span class="chip">${g.qi + 1} / ${g.total}${q.type === "poll" ? " · Poll" : ""}</span><div class="row"><button class="btn ghost" data-act="extend">+10 seconds</button><button class="btn ghost" data-act="reveal">End question</button></div></div>
     <div class="qtitle">${esc(q.text)}</div>
-    <div class="qmid">
+    <div class="qmid ${q.image ? "has-img" : ""}">
       ${timerRing(g)}
-      <div class="sponsor">${esc(g.event)}</div>
+      ${q.image ? `<img class="q-image" src="${esc(q.image)}" alt="">` : `<div class="sponsor">${esc(g.event)}</div>`}
       <div class="stat"><b id="answered">${g.answered}</b><span>of <span id="pcount">${g.player_count}</span> answered</span></div>
     </div>
     ${answerTiles(false)}`;
@@ -357,7 +395,11 @@ function startTimer() {
   const step = () => {
     const left = Math.max(0, g.q_ends_at - clock.now());
     const secs = $("secs"), ring = $("ring");
-    if (secs) secs.textContent = Math.ceil(left / 1000);
+    const sec = Math.ceil(left / 1000);
+    if (secs && secs.textContent !== String(sec)) {
+      secs.textContent = sec;
+      if (sec > 0 && sec <= 5 && g.question.type !== "raffle") sound.play(sec === 1 ? "lasttick" : "tick");
+    }
     if (ring) ring.setAttribute("stroke-dashoffset", String(RING * (1 - left / total)));
     // Time is up: ask the database to close the round (it ignores repeats).
     if (left <= 0 && clock.now() > g.q_ends_at + 400 && H.revealAsked !== g.qi) {
@@ -380,6 +422,7 @@ function startSpin() {
     if (!el) return;
     i = (i + 1 + Math.floor(Math.random() * Math.min(3, pool.length))) % pool.length;
     el.textContent = pool[i];
+    sound.play("flick");
     el.classList.remove("flick"); void el.offsetWidth; el.classList.add("flick");
     const done = Math.min(1, Math.max(0, (clock.now() - g.q_starts_at) / total));
     if (done < 1) H.timers.push(setTimeout(tick, 55 + done * done * 420));
@@ -403,6 +446,7 @@ function revealView() {
     const cards = ws.length
       ? ws.map((w, i) => `<div class="winner-card" style="animation-delay:${i * 0.15}s">
           <span class="winner-place">${ws.length > 1 ? ordinal(w.place) : "Winner"}</span>
+          ${w.avatar ? `<span class="winner-av" aria-hidden="true">${esc(w.avatar)}</span>` : ""}
           <span class="winner-name">${esc(w.name)}</span>
           ${g.can_redraw ? `<button class="btn small ghost redraw" data-act="redraw" data-id="${esc(w.id)}" data-name="${esc(w.name)}" title="Not in the room? Draw someone else">Redraw</button>` : ""}
         </div>`).join("")
@@ -419,7 +463,7 @@ function revealView() {
 
   if (q.type === "type") {
     const f = g.fastest || [];
-    const rows = f.map((p, i) => `<div class="lrow ${i < 3 ? "top" : ""}"><span class="rank">${i + 1}</span><span>${esc(p.name)}</span><span class="delta"></span><span class="score">${fmtSecs(p.ms)}</span></div>`).join("");
+    const rows = f.map((p, i) => `<div class="lrow ${i < 3 ? "top" : ""}"><span class="rank">${i + 1}</span><span>${av(p.avatar)}${esc(p.name)}</span><span class="delta"></span><span class="score">${fmtSecs(p.ms)}</span></div>`).join("");
     return `${head(`${g.answered} of ${g.player_count} typed it`)}
       <div class="kicker center-text">The word was</div>
       <div class="word-display small">${esc(q.answer || "")}</div>
@@ -442,7 +486,7 @@ function revealView() {
 function boardView() {
   const g = H.game;
   const rows = (g.leaderboard || []).map((p, i) => `
-    <div class="lrow"><span class="rank">${i + 1}</span><span>${esc(p.name)}${p.streak > 1 ? `<span class="streak">${p.streak} in a row</span>` : ""}</span><span class="delta">${p.delta ? "+" + p.delta : ""}</span><span class="score">${p.score.toLocaleString()}</span></div>`).join("");
+    <div class="lrow"><span class="rank">${i + 1}</span><span>${av(p.avatar)}${esc(p.name)}${p.streak > 1 ? `<span class="streak">${p.streak} in a row</span>` : ""}</span><span class="delta">${p.delta ? "+" + p.delta : ""}</span><span class="score">${p.score.toLocaleString()}</span></div>`).join("");
   return `
     <div class="row spread"><h2>Scoreboard</h2><button class="btn primary big" data-act="next">${nextLabel(g)}</button></div>
     <div class="board">${rows || `<div class="empty">No players</div>`}</div>`;
@@ -450,8 +494,8 @@ function boardView() {
 
 function podiumView() {
   const g = H.game, r = g.results || [], raffles = g.raffles || [];
-  const step = (p, cls, n) => p ? `<div class="step ${cls}"><span class="who">${esc(p.name)}</span><span class="pts">${p.score.toLocaleString()} pts</span><div class="block">${n}</div></div>` : `<div></div>`;
-  const table = r.map((p) => `<tr><td>${p.rank}</td><td>${esc(p.name)}</td>${g.scored ? `<td>${p.score.toLocaleString()}</td><td>${p.correct} / ${p.of}</td>` : ""}<td>${esc((p.prizes || []).join(", "))}</td></tr>`).join("");
+  const step = (p, cls, n) => p ? `<div class="step ${cls}">${p.avatar ? `<span class="podium-av" aria-hidden="true">${esc(p.avatar)}</span>` : ""}<span class="who">${esc(p.name)}</span><span class="pts">${p.score.toLocaleString()} pts</span><div class="block">${n}</div></div>` : `<div></div>`;
+  const table = r.map((p) => `<tr><td>${p.rank}</td><td>${av(p.avatar)}${esc(p.name)}</td>${g.scored ? `<td>${p.score.toLocaleString()}</td><td>${p.correct} / ${p.of}</td>` : ""}<td>${esc((p.prizes || []).join(", "))}</td></tr>`).join("");
   const raffleList = raffles.length ? `
     <div class="raffle-summary">
       <h3>Raffle winners</h3>
@@ -491,14 +535,16 @@ async function refresh() {
   if (refreshAgain) { refreshAgain = false; refreshSoon(0); }
   if (H.game && v.version < H.game.version) return;
   const changed = !H.game || v.version !== H.game.version || v.player_count !== H.game.player_count || v.answered !== H.game.answered;
+  if (H.game && v.phase === "lobby" && v.player_count > H.game.player_count) sound.play("join");
   H.game = v;
   wake.on();
   if (changed) render();
 }
 
 function connect() {
-  unlisten(H.gameCh); unlisten(H.hostCh);
+  unlisten(H.gameCh); unlisten(H.hostCh); unlisten(H.reactCh);
   const s = H.session;
+  H.reactCh = listen("react:" + s.game_id, { r: (d) => spawnReaction(d.e) });
   H.gameCh = listen("game:" + s.game_id, {
     state: (st) => { if (!H.game || st.version > H.game.version) refreshSoon(0); }
   }, (status) => {
@@ -519,9 +565,10 @@ function connect() {
 
 function gameOver(reason) {
   const g = H.game, sess = H.session;
-  unlisten(H.gameCh); unlisten(H.hostCh);
-  H.gameCh = H.hostCh = null;
+  unlisten(H.gameCh); unlisten(H.hostCh); unlisten(H.reactCh);
+  H.gameCh = H.hostCh = H.reactCh = null;
   setSession(null);
+  sound.music(null); lastSoundKey = "";
   H.game = null;
   wake.off();
   if (reason) toast(reason);
@@ -604,6 +651,42 @@ $("importFile").addEventListener("change", async (e) => {
   } catch {
     toast("That file isn't a valid game JSON.", true);
   }
+});
+
+/* Question image: shrink in the browser (max 1280×800, JPEG) then upload to the
+   organiser's folder in the quiz-images bucket. */
+async function shrinkImage(file) {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, 1280 / bmp.width, 800 / bmp.height);
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  const x = c.getContext("2d");
+  x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height);
+  x.drawImage(bmp, 0, 0, c.width, c.height);
+  return new Promise((res) => c.toBlob(res, "image/jpeg", 0.85));
+}
+
+$("imgFile").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f || !H.quiz || !H.user) return;
+  if (!/^image\//.test(f.type)) return toast("Choose an image file (JPG, PNG, WebP or GIF).", true);
+  if (f.size > 15 * 1024 * 1024) return toast("That image is too large. Use one under 15 MB.", true);
+  const idx = H.editIdx, quiz = H.quiz;
+  H.uploading = true; render();
+  try {
+    const blob = await shrinkImage(f);
+    const path = `${H.user.id}/${crypto.randomUUID()}.jpg`;
+    const { error } = await sb.storage.from("quiz-images").upload(path, blob, { contentType: "image/jpeg", cacheControl: "31536000" });
+    if (error) throw error;
+    quiz.questions[idx].image = sb.storage.from("quiz-images").getPublicUrl(path).data.publicUrl;
+    if (H.quiz === quiz) saveDraft();
+  } catch (err) {
+    console.error(err);
+    toast("Couldn't upload that image. Please try another.", true);
+  }
+  H.uploading = false;
+  render();
 });
 
 const findQuiz = async (id) => {
@@ -704,6 +787,15 @@ document.addEventListener("click", async (e) => {
       download(`${slug(H.quiz.title)}.json`, JSON.stringify(rest, null, 2), "application/json"); break;
     }
     case "open": openLobby(); break;
+    case "imgpick": $("imgFile").click(); break;
+    case "imgremove": qs[H.editIdx].image = ""; edited(); break;
+    case "truefalse": {
+      const cur = qs[H.editIdx];
+      cur.options = ["True", "False", "", ""]; if (cur.correct > 1) cur.correct = 0;
+      edited(); break;
+    }
+    case "mute": sound.setMuted(!sound.muted); render(); break;
+    case "extend": act("extend"); break;
 
     /* live game */
     case "redraw":

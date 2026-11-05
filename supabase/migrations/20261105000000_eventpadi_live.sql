@@ -74,6 +74,7 @@ create table if not exists public.players (
   joined_at     timestamptz not null default clock_timestamp()
 );
 create unique index if not exists players_game_name on public.players (game_id, lower(name));
+alter table public.players add column if not exists avatar text;
 create index if not exists players_game_score on public.players (game_id, score desc, joined_at);
 
 create table if not exists public.answers (
@@ -127,6 +128,25 @@ $$;
 create or replace function public._norm(v text) returns text
 language sql immutable as $$ select lower(regexp_replace(coalesce(v, ''), '[^[:alnum:]]', '', 'g')) $$;
 
+-- Avatars players can pick (kept in sync with AVATARS in public/js/common.js).
+create or replace function public._avatars() returns text[]
+language sql immutable as $$
+  select array['🦁','🐯','🐼','🦊','🐸','🐵','🦄','🐙','🐬','🦋','🐝','🐢','🦉','🐧','🐨','🐰','🐶','🐱','🌟','🔥','⚡','🎉','🎧','🚀']
+$$;
+
+-- Nickname filter. Whole words only, so real names like "Dickson" or "Cassandra" are fine.
+create or replace function public._bad_name(v text) returns boolean
+language sql immutable as $$
+  select exists (
+    select 1
+    from regexp_split_to_table(translate(lower(coalesce(v, '')), '013457@$!', 'oieastasi'), '[^a-z]+') w
+    where w in ('fuck','fucker','fucking','fuk','shit','bitch','cunt','dick','dickhead','cock','pussy','nigger','nigga','whore',
+                'slut','bastard','asshole','arsehole','rape','rapist','porn','penis','vagina','boobs','tits','sex','sexy','nude',
+                'ashawo','olosho','oloshi','prick','wanker','twat','motherfucker','hitler','nazi','isis')
+       or w like 'fuck%' or w like 'nigg%' or w like 'motherf%'
+  )
+$$;
+
 create or replace function public._err(msg text) returns jsonb
 language sql immutable as $$ select jsonb_build_object('error', msg) $$;
 
@@ -153,7 +173,7 @@ begin
     'is_last', g.qi = g.total - 1,
     'question', case when q is null or g.phase in ('lobby', 'podium', 'ended') then null else
       jsonb_build_object(
-        'type', q ->> 'type', 'text', q ->> 'text', 'options', q -> 'options', 'time', (q ->> 'time')::int,
+        'type', q ->> 'type', 'text', q ->> 'text', 'options', q -> 'options', 'time', (q ->> 'time')::int, 'image', q ->> 'image',
         'winners', (q ->> 'winners')::int,
         'correct', case when open then null else q -> 'correct' end,
         'answer', case when open then null else q -> 'answer' end,
@@ -372,7 +392,9 @@ begin
       return jsonb_build_object('error', format('Question %s: tick a correct answer that isn''t blank.', i + 1), 'index', i);
     end if;
     v_time := case when x ->> 'time' in ('5', '10', '15', '20', '30', '45', '60', '90', '120') then (x ->> 'time')::int else 20 end;
-    v_qs := v_qs || jsonb_build_object('type', v_type, 'text', v_text, 'options', v_opts, 'correct', v_correct, 'time', v_time);
+    v_qs := v_qs || jsonb_build_object('type', v_type, 'text', v_text, 'options', v_opts, 'correct', v_correct, 'time', v_time,
+      'image', case when x ->> 'image' ~ '^https://[a-z0-9]+\.supabase\.co/storage/v1/object/public/quiz-images/[A-Za-z0-9/_.-]{1,200}$'
+                    then x ->> 'image' end);
   end loop;
 
   for attempt in 1 .. 50 loop
@@ -409,7 +431,7 @@ begin
 
   if g.phase = 'lobby' then
     v := v || jsonb_build_object('players', coalesce((
-      select jsonb_agg(jsonb_build_object('id', id, 'name', name) order by joined_at)
+      select jsonb_agg(jsonb_build_object('id', id, 'name', name, 'avatar', avatar) order by joined_at)
       from public.players where game_id = g.id), '[]'::jsonb));
   elsif g.phase = 'question' and q ->> 'type' = 'type' then
     v := v || jsonb_build_object('word', q ->> 'answer');   -- shown only on the big screen
@@ -418,13 +440,13 @@ begin
       select jsonb_agg(name) from (select name from public.players where game_id = g.id order by random() limit 60) t), '[]'::jsonb));
   elsif g.phase = 'reveal' and q ->> 'type' = 'type' then
     v := v || jsonb_build_object('fastest', coalesce((
-      select jsonb_agg(jsonb_build_object('name', p.name, 'ms', a.ms) order by a.ms, a.created_at)
+      select jsonb_agg(jsonb_build_object('name', p.name, 'avatar', p.avatar, 'ms', a.ms) order by a.ms, a.created_at)
       from (select * from public.answers where game_id = g.id and qi = g.qi order by ms, created_at limit 10) a
       join public.players p on p.id = a.player_id), '[]'::jsonb));
   elsif g.phase = 'reveal' and q ->> 'type' = 'raffle' then
     v := v || jsonb_build_object(
       'winner_list', coalesce((
-        select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.name, 'place', w.place) order by w.place)
+        select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.name, 'avatar', p.avatar, 'place', w.place) order by w.place)
         from public.winners w join public.players p on p.id = w.player_id
         where w.game_id = g.id and w.qi = g.qi and not w.forfeited), '[]'::jsonb),
       'can_redraw', exists (
@@ -438,14 +460,14 @@ begin
         on c.choice = i));
   elsif g.phase = 'leaderboard' then
     v := v || jsonb_build_object('leaderboard', coalesce((
-      select jsonb_agg(jsonb_build_object('name', name, 'score', score, 'streak', streak,
+      select jsonb_agg(jsonb_build_object('name', name, 'avatar', avatar, 'score', score, 'streak', streak,
                                           'delta', coalesce((last ->> 'points')::int, 0)) order by score desc, joined_at)
       from (select * from public.players where game_id = g.id order by score desc, joined_at limit 5) t), '[]'::jsonb));
   elsif g.phase = 'podium' then
     v := v || jsonb_build_object(
       'scored', public._scored_rounds(g),
       'results', coalesce((
-        select jsonb_agg(jsonb_build_object('rank', rn, 'name', name, 'score', score, 'correct', correct_count,
+        select jsonb_agg(jsonb_build_object('rank', rn, 'name', name, 'avatar', avatar, 'score', score, 'correct', correct_count,
                                             'of', public._scored_rounds(g), 'prizes', prizes)
                          order by rn)
         from (select t.*, row_number() over (order by score desc, joined_at) rn,
@@ -507,6 +529,13 @@ begin
       perform public._send('game:' || g.id, 'kicked', jsonb_build_object('player_id', v_pid));
       perform public._send('host:' || g.host_token, 'players', '{}'::jsonb);
     end if;
+
+  elsif p_action = 'extend' then
+    if g.phase <> 'question' or g.quiz -> 'questions' -> g.qi ->> 'type' = 'raffle' then
+      return public._err('You can only add time while a round is open.');
+    end if;
+    update public.games set q_ends_at = greatest(q_ends_at, clock_timestamp()) + interval '10 seconds' where id = g.id;
+    perform public._bump(g.id);
 
   elsif p_action = 'redraw' then
     -- Replace a raffle winner who isn't in the room with a new random winner.
@@ -572,28 +601,32 @@ begin
   return jsonb_build_object('ok', true, 'game_id', g.id, 'title', g.title, 'event', g.event);
 end $$;
 
-create or replace function public.join_game(p_game uuid, p_name text) returns jsonb
+drop function if exists public.join_game(uuid, text);
+create or replace function public.join_game(p_game uuid, p_name text, p_avatar text default null) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
   g public.games;
   p public.players;
   v_name text := public._clean(p_name, 15);
+  v_avatar text := case when p_avatar = any (public._avatars()) then p_avatar
+                        else (public._avatars())[1 + floor(random() * array_length(public._avatars(), 1))::int] end;
 begin
   select * into g from public.games where id = p_game;
   if not found or g.phase = 'ended' then return public._err('That game has ended.'); end if;
   if g.phase = 'podium' then return public._err('This game has finished.'); end if;
   if g.locked then return public._err('The host has locked this game.'); end if;
   if v_name = '' then return public._err('Enter a nickname to join.'); end if;
+  if public._bad_name(v_name) then return public._err('Please choose a different nickname.'); end if;
   if (select count(*) from public.players where game_id = g.id) >= g.max_players then
     return public._err('This game is full.');
   end if;
   begin
-    insert into public.players (game_id, name) values (g.id, v_name) returning * into p;
+    insert into public.players (game_id, name, avatar) values (g.id, v_name, v_avatar) returning * into p;
   exception when unique_violation then
     return public._err('Someone already has that name. Try another.');
   end;
   perform public._send('host:' || g.host_token, 'players', '{}'::jsonb);
-  return jsonb_build_object('game_id', g.id, 'player_id', p.id, 'token', p.token, 'server_now', public._ms(clock_timestamp()));
+  return jsonb_build_object('game_id', g.id, 'player_id', p.id, 'token', p.token, 'avatar', p.avatar, 'server_now', public._ms(clock_timestamp()));
 end $$;
 
 create or replace function public.player_view(p_player uuid, p_token uuid) returns jsonb
@@ -613,7 +646,7 @@ begin
   v_rank := 1 + (select count(*) from public.players
                  where game_id = g.id and (score > p.score or (score = p.score and joined_at < p.joined_at)));
   v := public._public_state(g) || jsonb_build_object(
-    'me', jsonb_build_object('id', p.id, 'name', p.name, 'score', p.score, 'streak', p.streak, 'rank', v_rank),
+    'me', jsonb_build_object('id', p.id, 'name', p.name, 'avatar', p.avatar, 'score', p.score, 'streak', p.streak, 'rank', v_rank),
     'my_answer', (select choice from public.answers where player_id = p.id and qi = g.qi));
 
   if g.phase = 'reveal' then
@@ -885,7 +918,7 @@ grant execute on function
   public.host_view(uuid, uuid),
   public.host_action(uuid, uuid, text, jsonb),
   public.check_pin(text),
-  public.join_game(uuid, text),
+  public.join_game(uuid, text, text),
   public.player_view(uuid, uuid),
   public.submit_answer(uuid, uuid, int, int),
   public.submit_text(uuid, uuid, int, text),
@@ -901,6 +934,25 @@ grant execute on function
   public.game_report(uuid),
   public.forget_game(uuid)
 to authenticated;
+
+/* ---------------- Question images (Supabase Storage) ---------------- */
+-- Public bucket; organisers can upload only into a folder named after their user id.
+do $outer$
+begin
+  insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+  values ('quiz-images', 'quiz-images', true, 2097152, array['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+  on conflict (id) do update set public = true, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+
+  drop policy if exists "quiz images: owners upload" on storage.objects;
+  create policy "quiz images: owners upload" on storage.objects for insert to authenticated
+    with check (bucket_id = 'quiz-images' and (storage.foldername(name))[1] = auth.uid()::text);
+  drop policy if exists "quiz images: owners delete" on storage.objects;
+  create policy "quiz images: owners delete" on storage.objects for delete to authenticated
+    using (bucket_id = 'quiz-images' and (storage.foldername(name))[1] = auth.uid()::text);
+exception when others then
+  raise notice 'storage unavailable, skipping image bucket: %', sqlerrm;
+end
+$outer$;
 
 /* ---------------- Scheduled cleanup (pg_cron) ---------------- */
 do $outer$

@@ -6,6 +6,8 @@ const K_SESSION = "ep-live:player";
 
 const P = {
   step: "pin",          // pin | nick (only used when not in a game)
+  avatar: AVATARS.includes(store.get("ep-live:avatar")) ? store.get("ep-live:avatar") : AVATARS[Math.floor(Math.random() * AVATARS.length)],
+  reactAt: 0,
   pin: "",
   gameId: null,
   info: null,           // { event, title } from the PIN check
@@ -31,13 +33,14 @@ function render() {
   const s = P.state, me = s && s.me;
   const ph = s ? shownPhase(s) : null;
   const timer = ph === "question" && s.question.type !== "raffle" ? `<span class="ptimer" id="ptimer"></span>` : "";
-  const top = `<div class="phone-top"><span>${s ? `PIN <b>${esc(s.pin)}</b>` : esc(location.host)}</span>${timer}<span>${me ? `<b>${esc(me.name)}</b>` : "Eventpadi Live"}</span></div>`;
+  const top = `<div class="phone-top"><span>${s ? `PIN <b>${esc(s.pin)}</b>` : esc(location.host)}</span>${timer}<span>${me ? `${av(me.avatar)}<b>${esc(me.name)}</b>` : "Eventpadi Live"}</span></div>`;
   const off = P.session && !P.connected && !P.resuming ? `<div class="offline" role="status">Reconnecting…</div>` : "";
   const foot = me && s.phase !== "lobby" ? `<div class="phone-foot"><span>${esc(me.name)}</span><span>${me.score.toLocaleString()} pts</span></div>` : "";
   document.body.classList.toggle("joining", !s);
   // Keep whatever is being typed across re-renders.
   const keep = ["nick", "typein"].map((id) => [id, $(id) && $(id).value, document.activeElement && document.activeElement.id === id]);
-  $("phone").innerHTML = off + top + `<div class="phone-body">${body(ph)}</div>` + foot;
+  const reacts = s && ["lobby", "reveal", "leaderboard", "podium"].includes(ph) ? reactBar() : "";
+  $("phone").innerHTML = off + top + `<div class="phone-body">${body(ph)}${reacts}</div>` + foot;
   for (const [id, val, focused] of keep) {
     const el = $(id);
     if (!el) continue;
@@ -59,7 +62,9 @@ function body(ph) {
         <img class="brand-logo" src="/assets/logo.png" alt="eventpadi">
         ${P.info ? `<div><span class="event-name">${esc(P.info.event || P.info.title)}</span></div>` : ""}
         <h2>Pick a nickname</h2><p class="hint">This is how you'll appear on the big screen.</p>
+        <div class="av-picked" aria-hidden="true">${P.avatar}</div>
         <input class="input" id="nick" maxlength="15" placeholder="Nickname" autocomplete="nickname" enterkeyhint="go">
+        <div class="av-grid" role="radiogroup" aria-label="Choose your avatar">${AVATARS.map((a) => `<button class="av-btn" role="radio" aria-checked="${a === P.avatar}" data-act="pickav" data-a="${a}">${a}</button>`).join("")}</div>
         <div class="err" id="perr" role="alert">${esc(P.err)}</div>
         <button class="btn primary" data-act="join" ${P.busy ? "disabled" : ""}>${P.busy ? "Joining…" : "Join game"}</button>
         <button class="btn link" data-act="changepin">Use a different PIN</button></div></div>`;
@@ -76,7 +81,7 @@ function body(ph) {
   const me = s.me, q = s.question;
   switch (ph) {
     case "lobby":
-      return `<div class="center">${s.event ? `<div class="event-name">${esc(s.event)}</div>` : ""}<h2>You're in!</h2><p>See your name on the screen?</p><div class="spinner" aria-hidden="true"></div><p class="hint">The quiz starts when the host is ready.</p>
+      return `<div class="center">${s.event ? `<div class="event-name">${esc(s.event)}</div>` : ""}<div class="lobby-av" aria-hidden="true">${esc(me.avatar || "🎉")}</div><h2>You're in!</h2><p>See your name on the screen?</p><p class="hint">The game starts when the host is ready.</p>
         <button class="btn link" data-act="leave">Not you? Change nickname</button></div>`;
     case "intro": {
       const chip = `<span class="chip">Round ${s.qi + 1} of ${s.total} · ${roundLabel(q.type)}</span>`;
@@ -265,7 +270,7 @@ async function join() {
   const name = ($("nick").value || "").trim();
   if (!name) { P.err = "Enter a nickname to join."; render(); return focusInput(); }
   P.busy = true; P.err = ""; render();
-  const r = await rpc("join_game", { p_game: P.gameId, p_name: name });
+  const r = await rpc("join_game", { p_game: P.gameId, p_name: name, p_avatar: P.avatar });
   P.busy = false;
   if (r.error) { P.err = r.error; render(); const n = $("nick"); if (n) { n.value = name; n.focus(); } return; }
   setSession({ game_id: r.game_id, player_id: r.player_id, token: r.token });
@@ -283,6 +288,23 @@ async function answer(i) {
   if (!P.state || P.state.qi !== s.qi) return;
   if (r.error) { P.pending = null; toast(r.error, true); render(); return; }
   if (P.state.phase === "question" && P.state.qi === s.qi) { P.state.my_answer = i; P.pending = null; render(); }
+}
+
+/* Emoji reactions: sent over Realtime's HTTP endpoint to the host only (phones don't
+   receive each other's reactions), at most one every 0.8 s per phone. */
+function reactBar() {
+  return `<div class="react-bar" aria-label="Send a reaction to the big screen">${REACTIONS.map((e) => `<button class="react-btn" data-act="react" data-e="${e}" aria-label="Send ${e}">${e}</button>`).join("")}</div>`;
+}
+let reactCh = null;
+function sendReaction(e, btn) {
+  if (!P.session || !REACTIONS.includes(e)) return;
+  const now = Date.now();
+  if (now - P.reactAt < 800) return;
+  P.reactAt = now;
+  btn.classList.remove("sent"); void btn.offsetWidth; btn.classList.add("sent");
+  if (navigator.vibrate) navigator.vibrate(10);
+  if (!reactCh || reactCh.topic !== "realtime:react:" + P.session.game_id) reactCh = sb.channel("react:" + P.session.game_id, { config: { private: false } });
+  reactCh.httpSend("r", { e }).catch(() => {});
 }
 
 async function sendTyped() {
@@ -315,6 +337,8 @@ document.addEventListener("click", async (e) => {
     case "answer": answer(+b.dataset.i); break;
     case "typesend": sendTyped(); break;
     case "changepin": P.step = "pin"; P.err = ""; render(); focusInput(); break;
+    case "pickav": P.avatar = b.dataset.a; store.set("ep-live:avatar", P.avatar); render(); break;
+    case "react": sendReaction(b.dataset.e, b); break;
     case "leave": {
       const s = P.session;
       unlisten(P.ch); P.ch = null;
