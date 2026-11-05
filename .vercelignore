@@ -1,0 +1,8 @@
+/node_modules
+/test
+/supabase
+/scripts
+/assets
+/styles.css
+*.log
+.env*

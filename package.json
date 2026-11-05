@@ -1,0 +1,19 @@
+{
+  "name": "eventpadi-live",
+  "version": "1.0.0",
+  "description": "Eventpadi Live: real-time Kahoot-style quizzes and polls, on Supabase + Vercel",
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "setup": "node scripts/setup-supabase.mjs",
+    "test": "node test/live.mjs",
+    "deploy": "npx vercel deploy --prod"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.119.0",
+    "qrcode-generator": "^2.0.4"
+  }
+}
