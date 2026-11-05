@@ -3,6 +3,13 @@
 const LETTERS = ["A", "B", "C", "D"];
 const COLORS = ["bg-a", "bg-b", "bg-c", "bg-d"];
 const MARK = "/assets/mark.png";
+const ROUND = {
+  quiz:   { label: "Quiz",            icon: "?" },
+  poll:   { label: "Poll",            icon: "▮" },
+  type:   { label: "Fastest fingers", icon: "⌨" },
+  raffle: { label: "Raffle",          icon: "★" }
+};
+const roundLabel = (t) => (ROUND[t] || ROUND.quiz).label;
 const CFG = window.EP_CONFIG || {};
 
 const $ = (id) => document.getElementById(id);

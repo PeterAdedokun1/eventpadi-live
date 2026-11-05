@@ -14,32 +14,57 @@ const SAMPLE = {
     { type: "quiz", text: "In what year did Nigeria gain independence?", options: ["1957", "1960", "1963", "1970"], correct: 1, time: 20 },
     { type: "poll", text: "Which session are you most excited about today?", options: ["Fintech panel", "AI keynote", "Startup pitches", "Networking mixer"], correct: null, time: 15 },
     { type: "quiz", text: "Which is the longest bridge in Lagos?", options: ["Eko Bridge", "Carter Bridge", "Third Mainland Bridge", "Lekki-Ikoyi Link Bridge"], correct: 2, time: 20 },
-    { type: "quiz", text: "Which Nigerian artist won the Grammy for Best Global Music Album in 2021?", options: ["Wizkid", "Davido", "Tems", "Burna Boy"], correct: 3, time: 20 }
+    { type: "quiz", text: "Which Nigerian artist won the Grammy for Best Global Music Album in 2021?", options: ["Wizkid", "Davido", "Tems", "Burna Boy"], correct: 3, time: 20 },
+    { type: "type", text: "Type the word on the big screen", answer: "Jollof", time: 30 },
+    { type: "raffle", text: "Eventpadi tote bag", winners: 1 }
   ]
 };
 
 const uid = () => Math.random().toString(36).slice(2, 10);
-const blankQ = () => ({ type: "quiz", text: "", options: ["", "", "", ""], correct: 0, time: 20 });
+const TYPE_TIMES = TIMES.filter((t) => t >= 10);
+const WINNERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const blankQ = (type = "quiz") => ({
+  type,
+  text: type === "type" ? "Type the word on the big screen" : "",
+  options: ["", "", "", ""],
+  correct: type === "quiz" ? 0 : null,
+  time: type === "type" ? 30 : 20,
+  answer: "",
+  winners: 1
+});
 
 function normaliseQuiz(raw) {
   const qs = Array.isArray(raw && raw.questions) ? raw.questions : [];
   return {
     id: (raw && raw.id) || uid(),
     event: String((raw && raw.event) || ""),
-    title: String((raw && raw.title) || "Untitled quiz"),
+    title: String((raw && raw.title) || "Untitled game"),
     questions: (qs.length ? qs : [blankQ()]).slice(0, 100).map((x) => {
       const options = (Array.isArray(x.options) ? x.options : []).slice(0, 4).map(String);
       while (options.length < 4) options.push("");
-      const type = x.type === "poll" ? "poll" : "quiz";
+      const type = ROUND[x.type] ? x.type : "quiz";
       return {
         type,
         text: String(x.text || ""),
         options,
         correct: type === "quiz" ? (Number.isInteger(x.correct) && x.correct < 4 ? x.correct : 0) : null,
-        time: TIMES.includes(Number(x.time)) ? Number(x.time) : 20
+        time: (type === "type" ? TYPE_TIMES : TIMES).includes(Number(x.time)) ? Number(x.time) : type === "type" ? 30 : 20,
+        answer: String(x.answer || ""),
+        winners: WINNERS.includes(Number(x.winners)) ? Number(x.winners) : 1
       };
     })
   };
+}
+
+/* One line describing a round, for the editor list. */
+function roundMeta(x) {
+  if (x.type === "raffle") return `Raffle · ${x.winners} winner${x.winners === 1 ? "" : "s"}`;
+  return `${roundLabel(x.type)} · ${x.time}s`;
+}
+function roundTitle(x) {
+  if (x.type === "raffle") return x.text ? "Prize: " + x.text : "Untitled raffle";
+  if (x.type === "type") return x.answer ? `Type "${x.answer}"` : "No word yet";
+  return x.text || "Untitled question";
 }
 
 const H = {
@@ -81,7 +106,7 @@ function render() {
     if (f) { f.style.animationDuration = Math.max(0.1, ms / 1000) + "s"; requestAnimationFrame(() => f.classList.add("run")); }
     H.timers.push(setTimeout(render, ms + 20));
   }
-  if (ph === "question") startTimer();
+  if (ph === "question") { startTimer(); if (g.question.type === "raffle") startSpin(); }
   if (ph === "reveal") requestAnimationFrame(() => $("host").querySelectorAll(".bar").forEach((b) => (b.style.height = b.dataset.h)));
 }
 
@@ -107,11 +132,83 @@ function setupView() {
   if (H.editIdx >= qs.length) H.editIdx = qs.length - 1;
   const cur = qs[H.editIdx];
   const list = qs.map((x, i) => `
-    <button class="qitem" data-act="pick" data-i="${i}" aria-current="${i === H.editIdx}">
+    <button class="qitem t-${x.type}" data-act="pick" data-i="${i}" aria-current="${i === H.editIdx}">
       <span class="qnum">${i + 1}</span>
-      <span class="qmeta">${x.type === "poll" ? "Poll" : "Quiz"} · ${x.time}s</span>
-      <span class="qtext" id="qtext-${i}">${esc(x.text || "Untitled question")}</span>
+      <span class="qmeta">${esc(roundMeta(x))}</span>
+      <span class="qtext" id="qtext-${i}">${esc(roundTitle(x))}</span>
     </button>`).join("");
+  return `
+    <div class="page-head">
+      <div><h1>Build your game</h1><p class="note">Mix quiz questions, polls, fastest-fingers and raffles, then open the lobby so attendees can join from their phones.</p></div>
+      <div class="row" style="align-items:flex-end">
+        <div class="field key-field"><label for="hostkey">Host password</label><input class="input" id="hostkey" type="password" data-hostkey value="${esc(H.hostKey)}" autocomplete="current-password" placeholder="Required to host"></div>
+        <button class="btn primary big" data-act="open" ${H.busy ? "disabled" : ""}>${H.busy ? "Opening…" : "Open lobby →"}</button>
+      </div>
+    </div>
+    <div class="toolbar">
+      <button class="btn small" data-act="library">My games (${library().length})</button>
+      <button class="btn small" data-act="save">Save to my games</button>
+      <button class="btn small ghost" data-act="new">New game</button>
+      <button class="btn small ghost" data-act="import">Import JSON</button>
+      <button class="btn small ghost" data-act="export">Export JSON</button>
+    </div>
+    ${H.err ? `<div class="err-box" role="alert">${esc(H.err)}</div>` : ""}
+    <div class="card event-fields">
+      <div class="field"><label for="ev">Event</label><input class="input" id="ev" data-meta="event" maxlength="80" value="${esc(qz.event)}" placeholder="e.g. Lagos Tech Summit"></div>
+      <div class="field"><label for="qt">Game title</label><input class="input" id="qt" data-meta="title" maxlength="80" value="${esc(qz.title)}" placeholder="e.g. Morning icebreaker"></div>
+    </div>
+    <div class="editor">
+      <div class="qlist">
+        <div class="qlist-head"><span class="lbl">Rounds</span><span class="chip">${qs.length}</span></div>
+        ${list}
+        <div class="add-rounds">
+          <span class="lbl">Add a round</span>
+          <div class="add-grid">
+            ${Object.entries(ROUND).map(([t, r]) => `<button class="btn add-q t-${t}" data-act="add" data-type="${t}" ${qs.length >= 100 ? "disabled" : ""}><span class="add-ico" aria-hidden="true">${r.icon}</span>${r.label}</button>`).join("")}
+          </div>
+        </div>
+      </div>
+      <div class="card form">
+        <div class="row spread">
+          <span class="chip accent">Round ${H.editIdx + 1} of ${qs.length}</span>
+          <div class="row" style="gap:6px">
+            <button class="btn small ghost" data-act="up" ${H.editIdx === 0 ? "disabled" : ""} aria-label="Move round up">↑</button>
+            <button class="btn small ghost" data-act="down" ${H.editIdx === qs.length - 1 ? "disabled" : ""} aria-label="Move round down">↓</button>
+            <button class="btn small ghost" data-act="dup">Duplicate</button>
+            <button class="btn small ghost danger" data-act="del" ${qs.length < 2 ? "disabled" : ""}>Delete</button>
+          </div>
+        </div>
+        <div class="type-tabs" role="radiogroup" aria-label="Round type">
+          ${Object.entries(ROUND).map(([t, r]) => `<button class="type-tab t-${t}" role="radio" aria-checked="${cur.type === t}" data-act="settype" data-type="${t}"><span aria-hidden="true">${r.icon}</span>${r.label}</button>`).join("")}
+        </div>
+        ${roundForm(cur)}
+      </div>
+    </div>`;
+}
+
+function roundForm(cur) {
+  const timeSel = (list) => `<div class="field"><label for="qtime">Time limit</label>
+    <select class="input" id="qtime" data-field="time">${list.map((t) => `<option value="${t}" ${cur.time === t ? "selected" : ""}>${t} seconds</option>`).join("")}</select></div>`;
+
+  if (cur.type === "type") {
+    return `
+      <p class="type-help">Players type the word or phrase shown on the big screen. The fastest correct answer scores the most. Spelling counts; capitals, spaces and punctuation don't.</p>
+      <div class="field"><label for="answerin">Word or phrase to type</label><input class="input big-q" id="answerin" data-field="answer" maxlength="40" value="${esc(cur.answer)}" placeholder="e.g. Jollof" autocomplete="off"></div>
+      <div class="form-row">
+        <div class="field"><label for="qtextin">Instruction on phones</label><input class="input" id="qtextin" data-field="text" maxlength="200" value="${esc(cur.text)}" placeholder="Type the word on the big screen"></div>
+        ${timeSel(TYPE_TIMES)}
+      </div>`;
+  }
+  if (cur.type === "raffle") {
+    return `
+      <p class="type-help">Draws random winners from everyone who joined. Earlier raffle winners go to the back of the queue, and you can redraw anyone who isn't in the room.</p>
+      <div class="field"><label for="qtextin">Prize</label><input class="input big-q" id="qtextin" data-field="text" maxlength="200" value="${esc(cur.text)}" placeholder="e.g. Branded hoodie"></div>
+      <div class="form-row">
+        <div class="field"><label for="qwinners">Number of winners</label>
+          <select class="input" id="qwinners" data-field="winners">${WINNERS.map((n) => `<option value="${n}" ${cur.winners === n ? "selected" : ""}>${n} winner${n === 1 ? "" : "s"}</option>`).join("")}</select></div>
+        <div></div>
+      </div>`;
+  }
   const opts = cur.options.map((o, i) => `
     <div class="opt">
       <span class="letter ${COLORS[i]}">${LETTERS[i]}</span>
@@ -119,67 +216,20 @@ function setupView() {
       ${cur.type === "quiz" ? `<input type="radio" name="correct" data-correct="${i}" ${cur.correct === i ? "checked" : ""} aria-label="Mark ${LETTERS[i]} correct">` : "<span></span>"}
     </div>`).join("");
   return `
-    <div class="page-head">
-      <div><h1>Build your quiz</h1><p class="note">Write your questions, then open the lobby so attendees can join from their phones.</p></div>
-      <div class="row" style="align-items:flex-end">
-        <div class="field key-field"><label for="hostkey">Host password</label><input class="input" id="hostkey" type="password" data-hostkey value="${esc(H.hostKey)}" autocomplete="current-password" placeholder="Required to host"></div>
-        <button class="btn primary big" data-act="open" ${H.busy ? "disabled" : ""}>${H.busy ? "Opening…" : "Open lobby →"}</button>
-      </div>
-    </div>
-    <div class="toolbar">
-      <button class="btn small" data-act="library">My quizzes (${library().length})</button>
-      <button class="btn small" data-act="save">Save to my quizzes</button>
-      <button class="btn small ghost" data-act="new">New quiz</button>
-      <button class="btn small ghost" data-act="import">Import JSON</button>
-      <button class="btn small ghost" data-act="export">Export JSON</button>
-    </div>
-    ${H.err ? `<div class="err-box" role="alert">${esc(H.err)}</div>` : ""}
-    <div class="card event-fields">
-      <div class="field"><label for="ev">Event</label><input class="input" id="ev" data-meta="event" maxlength="80" value="${esc(qz.event)}" placeholder="e.g. Lagos Tech Summit"></div>
-      <div class="field"><label for="qt">Quiz title</label><input class="input" id="qt" data-meta="title" maxlength="80" value="${esc(qz.title)}" placeholder="e.g. Morning icebreaker"></div>
-    </div>
-    <div class="editor">
-      <div class="qlist">
-        <div class="qlist-head"><span class="lbl">Questions</span><span class="chip">${qs.length}</span></div>
-        ${list}
-        <button class="btn add-q" data-act="add" ${qs.length >= 100 ? "disabled" : ""}>+ Add question</button>
-      </div>
-      <div class="card form">
-        <div class="row spread">
-          <span class="chip accent">Question ${H.editIdx + 1} of ${qs.length}</span>
-          <div class="row" style="gap:6px">
-            <button class="btn small ghost" data-act="up" ${H.editIdx === 0 ? "disabled" : ""} aria-label="Move question up">↑</button>
-            <button class="btn small ghost" data-act="down" ${H.editIdx === qs.length - 1 ? "disabled" : ""} aria-label="Move question down">↓</button>
-            <button class="btn small ghost" data-act="dup">Duplicate</button>
-            <button class="btn small ghost danger" data-act="del" ${qs.length < 2 ? "disabled" : ""}>Delete</button>
-          </div>
-        </div>
-        <div class="field"><label for="qtextin">Question</label><input class="input big-q" id="qtextin" data-field="text" maxlength="200" value="${esc(cur.text)}" placeholder="Type your question"></div>
-        <div class="form-row">
-          <div class="field"><label for="qtype">Type</label>
-            <select class="input" id="qtype" data-field="type">
-              <option value="quiz" ${cur.type === "quiz" ? "selected" : ""}>Quiz (scored)</option>
-              <option value="poll" ${cur.type === "poll" ? "selected" : ""}>Poll (no right answer)</option>
-            </select></div>
-          <div class="field"><label for="qtime">Time limit</label>
-            <select class="input" id="qtime" data-field="time">
-              ${TIMES.map((t) => `<option value="${t}" ${cur.time === t ? "selected" : ""}>${t} seconds</option>`).join("")}
-            </select></div>
-        </div>
-        <div class="field"><span class="lbl">${cur.type === "quiz" ? "Answers · tick the correct one · C and D are optional" : "Poll options · C and D are optional"}</span><div class="opts">${opts}</div></div>
-      </div>
-    </div>`;
+    <div class="field"><label for="qtextin">Question</label><input class="input big-q" id="qtextin" data-field="text" maxlength="200" value="${esc(cur.text)}" placeholder="Type your question"></div>
+    <div class="form-row">${timeSel(TIMES)}<div></div></div>
+    <div class="field"><span class="lbl">${cur.type === "quiz" ? "Answers · tick the correct one · C and D are optional" : "Poll options · C and D are optional"}</span><div class="opts">${opts}</div></div>`;
 }
 
 function libraryView() {
   const lib = library();
   const rows = lib.length
-    ? lib.map((x) => `<div class="lib-row"><div><b>${esc(x.title)}</b><span class="note">${esc(x.event || "No event")} · ${x.questions.length} questions${x.savedAt ? " · saved " + new Date(x.savedAt).toLocaleString() : ""}</span></div>
+    ? lib.map((x) => `<div class="lib-row"><div><b>${esc(x.title)}</b><span class="note">${esc(x.event || "No event")} · ${x.questions.length} round${x.questions.length === 1 ? "" : "s"}${x.savedAt ? " · saved " + new Date(x.savedAt).toLocaleString() : ""}</span></div>
         <div class="row"><button class="btn small primary" data-act="load" data-id="${esc(x.id)}">Open</button><button class="btn small ghost danger" data-act="libdel" data-id="${esc(x.id)}">Delete</button></div></div>`).join("")
-    : `<div class="empty">No saved quizzes yet. Use "Save to my quizzes" in the editor.</div>`;
+    : `<div class="empty">No saved games yet. Use "Save to my games" in the editor.</div>`;
   return `
-    <div class="row spread"><h2>My quizzes</h2><button class="btn ghost" data-act="editor">Back to editor</button></div>
-    <p class="note">Quizzes are saved in this browser. Export them as JSON to move them to another computer.</p>
+    <div class="row spread"><h2>My games</h2><button class="btn ghost" data-act="editor">Back to editor</button></div>
+    <p class="note">Games are saved in this browser. Export them as JSON to move them to another computer.</p>
     <div class="library">${rows}</div>`;
 }
 
@@ -205,10 +255,10 @@ function lobbyView() {
       <div class="qr">${qrSvg(`${joinBase()}/?pin=${g.pin}`)}</div>
     </div>
     <div class="row spread">
-      <div><h2>${esc(g.title)}</h2><div class="note">${esc(g.event)}${g.event ? " · " : ""}${g.total} questions${g.locked ? " · Joining is locked" : ""}</div></div>
+      <div><h2>${esc(g.title)}</h2><div class="note">${esc(g.event)}${g.event ? " · " : ""}${g.total} round${g.total === 1 ? "" : "s"}${g.locked ? " · Joining is locked" : ""}</div></div>
       <div class="row">
         <span class="chip" aria-live="polite">${g.player_count} joined</span>
-        <button class="btn ghost" data-act="back">Edit quiz</button>
+        <button class="btn ghost" data-act="back">Edit game</button>
         <button class="btn primary big" data-act="start" ${g.player_count ? "" : "disabled"}>Start</button>
       </div>
     </div>
@@ -217,10 +267,14 @@ function lobbyView() {
 }
 
 function introView() {
-  const g = H.game;
-  return `<div class="intro">
-    <div class="kicker">Question ${g.qi + 1} of ${g.total}${g.question.type === "poll" ? " · Poll" : ""}</div>
-    <h2>${esc(g.question.text)}</h2>
+  const g = H.game, q = g.question;
+  const kicker = `Round ${g.qi + 1} of ${g.total} · ${roundLabel(q.type)}`;
+  let title = esc(q.text), sub = "";
+  if (q.type === "type") { title = "Fastest fingers!"; sub = "Get your phones ready. Type the word that appears here, as fast as you can."; }
+  if (q.type === "raffle") { title = "Raffle time!"; sub = `Prize: ${esc(q.text)}`; }
+  return `<div class="intro t-${q.type}">
+    <div class="kicker">${kicker}</div>
+    <h2>${title}</h2>${sub ? `<p class="intro-sub">${sub}</p>` : ""}
     <div class="bar-track"><div class="bar-fill"></div></div>
   </div>`;
 }
@@ -236,13 +290,36 @@ function answerTiles(reveal) {
 }
 
 const RING = 2 * Math.PI * 46;
+const timerRing = (g) => `<div class="timer"><svg width="104" height="104" viewBox="0 0 104 104"><circle cx="52" cy="52" r="46" fill="none" stroke="var(--accent-100)" stroke-width="8"/><circle id="ring" cx="52" cy="52" r="46" fill="none" stroke="var(--accent)" stroke-width="8" stroke-linecap="round" stroke-dasharray="${RING}" stroke-dashoffset="0"/></svg><span id="secs">${g.question.time}</span></div>`;
+
 function questionView() {
-  const g = H.game;
+  const g = H.game, q = g.question;
+  if (q.type === "raffle") {
+    return `
+      <div class="qhead"><span class="chip">${g.qi + 1} / ${g.total} · Raffle</span><button class="btn ghost" data-act="reveal">Draw now</button></div>
+      <div class="raffle-stage">
+        <div class="kicker">Drawing ${q.winners > 1 ? q.winners + " winners" : "a winner"} for</div>
+        <div class="raffle-prize">${esc(q.text)}</div>
+        <div class="spinner-box" aria-live="off"><span id="spin-name">…</span></div>
+        <div class="note">${g.player_count} player${g.player_count === 1 ? "" : "s"} in the draw</div>
+      </div>`;
+  }
+  if (q.type === "type") {
+    return `
+      <div class="qhead"><span class="chip">${g.qi + 1} / ${g.total} · Fastest fingers</span><button class="btn ghost" data-act="reveal">End round</button></div>
+      <div class="kicker center-text">Type this on your phone</div>
+      <div class="word-display" style="--len:${Math.max(4, (g.word || "").length)}">${esc(g.word || "")}</div>
+      <div class="qmid">
+        ${timerRing(g)}
+        <div class="sponsor">${esc(g.event)}</div>
+        <div class="stat"><b id="answered">${g.answered}</b><span>of <span id="pcount">${g.player_count}</span> typed it</span></div>
+      </div>`;
+  }
   return `
-    <div class="qhead"><span class="chip">${g.qi + 1} / ${g.total}</span><button class="btn ghost" data-act="reveal">End question</button></div>
-    <div class="qtitle">${esc(g.question.text)}</div>
+    <div class="qhead"><span class="chip">${g.qi + 1} / ${g.total}${q.type === "poll" ? " · Poll" : ""}</span><button class="btn ghost" data-act="reveal">End question</button></div>
+    <div class="qtitle">${esc(q.text)}</div>
     <div class="qmid">
-      <div class="timer"><svg width="104" height="104" viewBox="0 0 104 104"><circle cx="52" cy="52" r="46" fill="none" stroke="var(--accent-100)" stroke-width="8"/><circle id="ring" cx="52" cy="52" r="46" fill="none" stroke="var(--accent)" stroke-width="8" stroke-linecap="round" stroke-dasharray="${RING}" stroke-dashoffset="0"/></svg><span id="secs">${g.question.time}</span></div>
+      ${timerRing(g)}
       <div class="sponsor">${esc(g.event)}</div>
       <div class="stat"><b id="answered">${g.answered}</b><span>of <span id="pcount">${g.player_count}</span> answered</span></div>
     </div>
@@ -257,7 +334,7 @@ function startTimer() {
     const secs = $("secs"), ring = $("ring");
     if (secs) secs.textContent = Math.ceil(left / 1000);
     if (ring) ring.setAttribute("stroke-dashoffset", String(RING * (1 - left / total)));
-    // Time is up: ask the database to close the question (it ignores repeats).
+    // Time is up: ask the database to close the round (it ignores repeats).
     if (left <= 0 && clock.now() > g.q_ends_at + 400 && H.revealAsked !== g.qi) {
       H.revealAsked = g.qi;
       act("reveal");
@@ -267,17 +344,71 @@ function startTimer() {
   H.timers.push(setInterval(step, 100));
 }
 
+/* Raffle: flick through names, slowing down as the draw time runs out. */
+function startSpin() {
+  const g = H.game;
+  const pool = g.pool && g.pool.length ? g.pool : ["…"];
+  const total = Math.max(1, g.q_ends_at - g.q_starts_at);
+  let i = Math.floor(Math.random() * pool.length);
+  const tick = () => {
+    const el = $("spin-name");
+    if (!el) return;
+    i = (i + 1 + Math.floor(Math.random() * Math.min(3, pool.length))) % pool.length;
+    el.textContent = pool[i];
+    el.classList.remove("flick"); void el.offsetWidth; el.classList.add("flick");
+    const done = Math.min(1, Math.max(0, (clock.now() - g.q_starts_at) / total));
+    if (done < 1) H.timers.push(setTimeout(tick, 55 + done * done * 420));
+  };
+  tick();
+}
+
+function nextLabel(g) {
+  if (g.phase === "reveal" && ["quiz", "type"].includes(g.question.type)) return "Scoreboard";
+  return g.is_last ? "Final results" : "Next round";
+}
+
+const fmtSecs = (ms) => (ms / 1000).toFixed(2) + "s";
+
 function revealView() {
   const g = H.game, q = g.question;
+  const head = (info) => `<div class="row spread"><span class="chip">${g.qi + 1} / ${g.total} · ${info}</span><button class="btn primary big" data-act="next">${nextLabel(g)}</button></div>`;
+
+  if (q.type === "raffle") {
+    const ws = g.winner_list || [];
+    const cards = ws.length
+      ? ws.map((w, i) => `<div class="winner-card" style="animation-delay:${i * 0.15}s">
+          <span class="winner-place">${ws.length > 1 ? ordinal(w.place) : "Winner"}</span>
+          <span class="winner-name">${esc(w.name)}</span>
+          ${g.can_redraw ? `<button class="btn small ghost redraw" data-act="redraw" data-id="${esc(w.id)}" data-name="${esc(w.name)}" title="Not in the room? Draw someone else">Redraw</button>` : ""}
+        </div>`).join("")
+      : `<div class="empty">Nobody to draw from.</div>`;
+    return `${head("Raffle")}
+      <div class="raffle-stage won">
+        <div class="kicker">${ws.length > 1 ? "Our winners" : "And the winner is…"}</div>
+        <div class="winners ${ws.length > 3 ? "many" : ""}">${cards}</div>
+        <div class="raffle-prize small">Prize: ${esc(q.text)}</div>
+        <p class="prize">Please come to the help desk to collect your prize.</p>
+      </div>
+      <div class="confetti" aria-hidden="true">${Array.from({ length: 28 }, (_, i) => `<i style="--x:${(i * 37) % 100}%;--d:${(i % 7) * 0.25}s;--c:${i % 4}"></i>`).join("")}</div>`;
+  }
+
+  if (q.type === "type") {
+    const f = g.fastest || [];
+    const rows = f.map((p, i) => `<div class="lrow ${i < 3 ? "top" : ""}"><span class="rank">${i + 1}</span><span>${esc(p.name)}</span><span class="delta"></span><span class="score">${fmtSecs(p.ms)}</span></div>`).join("");
+    return `${head(`${g.answered} of ${g.player_count} typed it`)}
+      <div class="kicker center-text">The word was</div>
+      <div class="word-display small">${esc(q.answer || "")}</div>
+      <h3 class="center-text">Fastest fingers</h3>
+      <div class="board">${rows || `<div class="empty">Nobody typed it in time.</div>`}</div>`;
+  }
+
   const counts = g.counts || q.options.map(() => 0);
   const max = Math.max(1, ...counts);
   const cols = counts.map((c, i) => {
     const dim = q.type === "quiz" && i !== q.correct;
     return `<div class="col ${dim ? "dim" : ""}"><span class="count">${c}${q.type === "quiz" && i === q.correct ? " ✓" : ""}</span><div class="bar ${COLORS[i]}" style="height:6px" data-h="${Math.max(3, (c / max) * 100) * 0.8}%"></div><b>${LETTERS[i]}</b></div>`;
   }).join("");
-  const nextLabel = q.type === "poll" ? (g.is_last ? "Final results" : "Next question") : "Scoreboard";
-  return `
-    <div class="row spread"><span class="chip">${g.qi + 1} / ${g.total} · ${g.answered} of ${g.player_count} answered</span><button class="btn primary big" data-act="next">${nextLabel}</button></div>
+  return `${head(`${g.answered} of ${g.player_count} answered`)}
     <div class="qtitle">${esc(q.text)}</div>
     <div class="chart" style="grid-template-columns:repeat(${counts.length},1fr)" role="img" aria-label="Answer counts: ${counts.map((c, i) => LETTERS[i] + " " + c).join(", ")}">${cols}</div>
     ${answerTiles(true)}`;
@@ -288,21 +419,27 @@ function boardView() {
   const rows = (g.leaderboard || []).map((p, i) => `
     <div class="lrow"><span class="rank">${i + 1}</span><span>${esc(p.name)}${p.streak > 1 ? `<span class="streak">${p.streak} in a row</span>` : ""}</span><span class="delta">${p.delta ? "+" + p.delta : ""}</span><span class="score">${p.score.toLocaleString()}</span></div>`).join("");
   return `
-    <div class="row spread"><h2>Scoreboard</h2><button class="btn primary big" data-act="next">${g.is_last ? "Final results" : "Next question"}</button></div>
+    <div class="row spread"><h2>Scoreboard</h2><button class="btn primary big" data-act="next">${nextLabel(g)}</button></div>
     <div class="board">${rows || `<div class="empty">No players</div>`}</div>`;
 }
 
 function podiumView() {
-  const g = H.game, r = g.results || [];
+  const g = H.game, r = g.results || [], raffles = g.raffles || [];
   const step = (p, cls, n) => p ? `<div class="step ${cls}"><span class="who">${esc(p.name)}</span><span class="pts">${p.score.toLocaleString()} pts</span><div class="block">${n}</div></div>` : `<div></div>`;
-  const table = r.map((p) => `<tr><td>${p.rank}</td><td>${esc(p.name)}</td><td>${p.score.toLocaleString()}</td><td>${p.correct} / ${p.of}</td></tr>`).join("");
+  const table = r.map((p) => `<tr><td>${p.rank}</td><td>${esc(p.name)}</td>${g.scored ? `<td>${p.score.toLocaleString()}</td><td>${p.correct} / ${p.of}</td>` : ""}<td>${esc((p.prizes || []).join(", "))}</td></tr>`).join("");
+  const raffleList = raffles.length ? `
+    <div class="raffle-summary">
+      <h3>Raffle winners</h3>
+      ${raffles.map((x) => `<div class="raffle-line"><span class="raffle-prize-name">${esc(x.prize)}</span><span>${x.winners.map(esc).join(", ")}</span></div>`).join("")}
+    </div>` : "";
   return `
-    <div class="row spread"><div><h2>Winners</h2><div class="note">${esc(g.title)}${g.event ? " · " + esc(g.event) : ""}</div></div>
+    <div class="row spread"><div><h2>${g.scored ? "Winners" : "That's a wrap!"}</h2><div class="note">${esc(g.title)}${g.event ? " · " + esc(g.event) : ""}</div></div>
       <div class="row"><button class="btn" data-act="csv">Download results (CSV)</button><button class="btn primary" data-act="finish">Close game</button></div></div>
-    <div class="podium">${step(r[1], "p2", 2)}${step(r[0], "p1", 1)}${step(r[2], "p3", 3)}</div>
-    <p class="prize">Top 3, please come to the help desk to collect your prizes.</p>
+    ${g.scored ? `<div class="podium">${step(r[1], "p2", 2)}${step(r[0], "p1", 1)}${step(r[2], "p3", 3)}</div>
+    <p class="prize">Top 3, please come to the help desk to collect your prizes.</p>` : ""}
+    ${raffleList}
     <details class="all-results"><summary>All ${r.length} players</summary>
-      <table class="results"><thead><tr><th>Rank</th><th>Name</th><th>Score</th><th>Correct</th></tr></thead><tbody>${table}</tbody></table>
+      <table class="results"><thead><tr><th>Rank</th><th>Name</th>${g.scored ? "<th>Score</th><th>Correct</th>" : ""}<th>Prizes</th></tr></thead><tbody>${table}</tbody></table>
     </details>`;
 }
 
@@ -414,8 +551,8 @@ const csvCell = (v) => {
 
 function exportCsv() {
   const g = H.game;
-  const lines = [["Rank", "Name", "Score", "Correct answers", "Quiz questions"]]
-    .concat((g.results || []).map((p) => [p.rank, p.name, p.score, p.correct, p.of]))
+  const lines = [["Rank", "Name", "Score", "Correct answers", "Scored rounds", "Prizes won"]]
+    .concat((g.results || []).map((p) => [p.rank, p.name, p.score, p.correct, p.of, (p.prizes || []).join("; ")]))
     .map((row) => row.map(csvCell).join(","));
   download(`${slug(g.title)}-results-${g.pin}.csv`, "﻿" + lines.join("\r\n"), "text/csv");
 }
@@ -431,7 +568,7 @@ $("importFile").addEventListener("change", async (e) => {
     saveDraft(); render();
     toast(`Imported "${H.quiz.title}"`);
   } catch {
-    toast("That file isn't a valid quiz JSON.", true);
+    toast("That file isn't a valid game JSON.", true);
   }
 });
 
@@ -444,7 +581,19 @@ document.addEventListener("click", async (e) => {
   const edited = () => { saveDraft(); render(); };
   switch (a) {
     case "pick": H.editIdx = +b.dataset.i; render(); break;
-    case "add": qs.push(blankQ()); H.editIdx = qs.length - 1; edited(); $("qtextin").focus(); break;
+    case "add": qs.push(blankQ(b.dataset.type)); H.editIdx = qs.length - 1; edited(); ($("answerin") || $("qtextin")).focus(); break;
+    case "settype": {
+      const cur = qs[H.editIdx], t = b.dataset.type;
+      if (cur.type === t) break;
+      const fresh = blankQ(t);
+      if (cur.type === "type" || t === "type") cur.text = fresh.text;   // the instruction text isn't a question
+      if (t === "type" && !TYPE_TIMES.includes(cur.time)) cur.time = fresh.time;
+      cur.type = t; cur.correct = fresh.correct;
+      edited(); break;
+    }
+    case "redraw":
+      if (await popup({ title: `Redraw instead of ${b.dataset.name}?`, message: "Use this if the winner isn't in the room. A new winner is drawn at random and this person loses the prize.", confirmLabel: "Redraw", tone: "danger", icon: "↻" })) act("redraw", { player_id: b.dataset.id });
+      break;
     case "dup": qs.splice(H.editIdx + 1, 0, JSON.parse(JSON.stringify(qs[H.editIdx]))); H.editIdx++; edited(); break;
     case "del": qs.splice(H.editIdx, 1); H.editIdx = Math.max(0, H.editIdx - 1); edited(); break;
     case "up": case "down": {
@@ -452,12 +601,12 @@ document.addEventListener("click", async (e) => {
       [qs[H.editIdx], qs[j]] = [qs[j], qs[H.editIdx]]; H.editIdx = j; edited(); break;
     }
     case "new":
-      if (!(await popup({ title: "Start a new quiz?", message: "This clears the editor. Save the current quiz to My quizzes first if you want to keep it.", confirmLabel: "Start new quiz", icon: "+" }))) return;
+      if (!(await popup({ title: "Start a new game?", message: "This clears the editor. Save the current game to My games first if you want to keep it.", confirmLabel: "Start new game", icon: "+" }))) return;
       H.quiz = normaliseQuiz({ title: "", event: H.quiz.event, questions: [] }); H.editIdx = 0; H.err = ""; edited(); break;
     case "save": {
       const lib = library().filter((x) => x.id !== H.quiz.id);
       lib.unshift({ ...JSON.parse(JSON.stringify(H.quiz)), savedAt: Date.now() });
-      store.set(K.lib, lib); render(); toast("Saved to My quizzes"); break;
+      store.set(K.lib, lib); render(); toast("Saved to My games"); break;
     }
     case "library": H.view = "library"; render(); break;
     case "editor": H.view = "edit"; render(); break;
@@ -467,7 +616,7 @@ document.addEventListener("click", async (e) => {
       break;
     }
     case "libdel":
-      if (!(await popup({ title: "Delete this quiz?", message: `"${(library().find((y) => y.id === b.dataset.id) || {}).title || "This quiz"}" will be removed from My quizzes. This can't be undone.`, confirmLabel: "Delete", tone: "danger" }))) return;
+      if (!(await popup({ title: "Delete this game?", message: `"${(library().find((y) => y.id === b.dataset.id) || {}).title || "This game"}" will be removed from My games. This can't be undone.`, confirmLabel: "Delete", tone: "danger" }))) return;
       store.set(K.lib, library().filter((y) => y.id !== b.dataset.id)); render(); break;
     case "import": $("importFile").click(); break;
     case "export": {
@@ -503,7 +652,10 @@ document.addEventListener("input", (e) => {
   if (t.dataset.hostkey !== undefined) { H.hostKey = t.value; return; }
   const cur = H.quiz.questions[H.editIdx];
   if (t.dataset.meta) H.quiz[t.dataset.meta] = t.value;
-  else if (t.dataset.field === "text") { cur.text = t.value; const el = $("qtext-" + H.editIdx); if (el) el.textContent = t.value || "Untitled question"; }
+  else if (t.dataset.field === "text" || t.dataset.field === "answer") {
+    cur[t.dataset.field] = t.value;
+    const el = $("qtext-" + H.editIdx); if (el) el.textContent = roundTitle(cur);
+  }
   else if (t.dataset.opt) cur.options[+t.dataset.opt] = t.value;
   else return;
   saveDraft();
@@ -514,8 +666,7 @@ document.addEventListener("change", (e) => {
   if (H.game) return;
   const cur = H.quiz.questions[H.editIdx];
   if (t.dataset.correct) cur.correct = +t.dataset.correct;
-  else if (t.dataset.field === "type") { cur.type = t.value; cur.correct = t.value === "quiz" ? 0 : null; render(); }
-  else if (t.dataset.field === "time") { cur.time = +t.value; render(); }
+  else if (t.dataset.field === "time" || t.dataset.field === "winners") { cur[t.dataset.field] = +t.value; render(); }
   else return;
   saveDraft();
 });

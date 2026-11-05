@@ -18,7 +18,9 @@ const P = {
   busy: false,
   timers: [],
   ch: null,
-  lastKey: ""
+  lastKey: "",
+  typeErr: "",          // fastest fingers: "try again" message
+  typeMs: null          // fastest fingers: my time once correct
 };
 
 /* ---------- Rendering ---------- */
@@ -28,14 +30,22 @@ function render() {
   clearTimers();
   const s = P.state, me = s && s.me;
   const ph = s ? shownPhase(s) : null;
-  const timer = ph === "question" ? `<span class="ptimer" id="ptimer"></span>` : "";
+  const timer = ph === "question" && s.question.type !== "raffle" ? `<span class="ptimer" id="ptimer"></span>` : "";
   const top = `<div class="phone-top"><span>${s ? `PIN <b>${esc(s.pin)}</b>` : esc(location.host)}</span>${timer}<span>${me ? `<b>${esc(me.name)}</b>` : "Eventpadi Live"}</span></div>`;
   const off = P.session && !P.connected && !P.resuming ? `<div class="offline" role="status">Reconnecting…</div>` : "";
   const foot = me && s.phase !== "lobby" ? `<div class="phone-foot"><span>${esc(me.name)}</span><span>${me.score.toLocaleString()} pts</span></div>` : "";
   document.body.classList.toggle("joining", !s);
-  const typed = $("nick") && $("nick").value;
+  // Keep whatever is being typed across re-renders.
+  const keep = ["nick", "typein"].map((id) => [id, $(id) && $(id).value, document.activeElement && document.activeElement.id === id]);
   $("phone").innerHTML = off + top + `<div class="phone-body">${body(ph)}</div>` + foot;
-  if (typed && $("nick")) $("nick").value = typed;
+  for (const [id, val, focused] of keep) {
+    const el = $(id);
+    if (!el) continue;
+    if (val) el.value = val;
+    if (focused) el.focus();
+  }
+  const ti = $("typein");
+  if (ti && !keep[1][2] && !document.querySelector(".modal-backdrop")) ti.focus();
   if (ph === "intro") P.timers.push(setTimeout(render, Math.max(0, s.q_starts_at - clock.now()) + 20));
   if (ph === "question") startTimer();
 }
@@ -68,9 +78,30 @@ function body(ph) {
     case "lobby":
       return `<div class="center">${s.event ? `<div class="event-name">${esc(s.event)}</div>` : ""}<h2>You're in!</h2><p>See your name on the screen?</p><div class="spinner" aria-hidden="true"></div><p class="hint">The quiz starts when the host is ready.</p>
         <button class="btn link" data-act="leave">Not you? Change nickname</button></div>`;
-    case "intro":
-      return `<div class="center"><span class="chip">Question ${s.qi + 1} of ${s.total}${q.type === "poll" ? " · Poll" : ""}</span><h2>Get ready!</h2><div class="spinner" aria-hidden="true"></div></div>`;
+    case "intro": {
+      const chip = `<span class="chip">Round ${s.qi + 1} of ${s.total} · ${roundLabel(q.type)}</span>`;
+      if (q.type === "type") return `<div class="center">${chip}<div class="round-ico t-type" aria-hidden="true">⌨</div><h2>Fastest fingers!</h2><p>Watch the big screen and type the word as fast as you can.</p></div>`;
+      if (q.type === "raffle") return `<div class="center">${chip}<div class="round-ico t-raffle" aria-hidden="true">★</div><h2>Raffle time!</h2><p>Prize: <b>${esc(q.text)}</b></p><p class="hint">Everyone who joined is in the draw.</p></div>`;
+      return `<div class="center">${chip}<h2>Get ready!</h2><div class="spinner" aria-hidden="true"></div></div>`;
+    }
     case "question": {
+      if (q.type === "raffle") {
+        return `<div class="center"><div class="round-ico t-raffle spin" aria-hidden="true">★</div><h2>Drawing…</h2><p>Fingers crossed! Watch the big screen.</p><p class="hint">Prize: ${esc(q.text)}</p></div>`;
+      }
+      if (q.type === "type") {
+        if (s.my_answer != null) {
+          return `<div class="center"><div class="result-card good"><span class="lbl">Got it</span><h3>${P.typeMs != null ? (P.typeMs / 1000).toFixed(2) + " seconds" : "Locked in!"}</h3></div><p>Waiting for everyone else…</p><div class="spinner" aria-hidden="true"></div></div>`;
+        }
+        if (clock.now() > s.q_ends_at) {
+          return `<div class="center"><h2>Time's up!</h2><p>Waiting for the results…</p><div class="spinner" aria-hidden="true"></div></div>`;
+        }
+        return `<div class="type-round">
+          <p class="hint" style="text-align:center;margin:0">${esc(q.text)}</p>
+          <input class="input type-in ${P.typeErr ? "shake" : ""}" id="typein" maxlength="60" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" placeholder="Type it here" aria-label="Your answer">
+          <div class="err" role="alert">${esc(P.typeErr)}</div>
+          <button class="btn primary big-btn" data-act="typesend" ${P.busy ? "disabled" : ""}>${P.busy ? "Checking…" : "Send"}</button>
+        </div>`;
+      }
       const picked = s.my_answer != null ? s.my_answer : P.pending;
       if (picked != null) {
         return `<div class="center"><div class="result-card neutral"><span class="lbl">You picked</span><h3>${LETTERS[picked]} · ${esc(q.options[picked])}</h3></div><p>${s.my_answer != null ? "Answer locked in. Waiting for everyone else…" : "Sending…"}</p><div class="spinner" aria-hidden="true"></div></div>`;
@@ -85,22 +116,35 @@ function body(ph) {
       const r = s.result;
       if (!r) return `<div class="center"><div class="spinner" aria-hidden="true"></div><p>Getting your result…</p></div>`;
       const place = `<p>You're in ${ordinal(me.rank)} place</p>${s.ahead ? `<p class="hint">${s.ahead.gap.toLocaleString()} points behind ${esc(s.ahead.name)}</p>` : ""}`;
+      if (q.type === "raffle") {
+        const drawn = (q.drawn || []).map(esc).join(", ");
+        if (r.won) return `<div class="center"><div class="result-card win"><span class="lbl">Congratulations!</span><h3>You won!</h3><p class="big-prize">${esc(q.text)}</p><p>Go to the help desk to collect your prize.</p></div></div>`;
+        return `<div class="center"><div class="result-card neutral"><h3>Not this time</h3><p>${drawn ? (q.drawn.length > 1 ? "Winners: " : "Winner: ") + drawn : "No winner drawn."}</p></div><p class="hint">Prize: ${esc(q.text)}</p></div>`;
+      }
+      if (q.type === "type") {
+        if (!r.correct) return `<div class="center"><div class="result-card bad"><h3>Time's up</h3><p>The word was <b>${esc(q.answer || "")}</b></p></div>${place}</div>`;
+        return `<div class="center"><div class="result-card good"><h3>${r.place === 1 ? "Fastest fingers!" : "You typed it!"}</h3><div class="big-num">+${r.points.toLocaleString()}</div><p>${(r.ms / 1000).toFixed(2)}s · ${ordinal(r.place)} fastest</p></div>${place}</div>`;
+      }
       if (q.type === "poll") return `<div class="center"><div class="result-card neutral"><h3>${r.answered ? "Thanks for voting" : "You didn't vote"}</h3><p>Results are on the big screen.</p></div></div>`;
       if (!r.answered) return `<div class="center"><div class="result-card bad"><h3>Time's up</h3><p>You didn't answer this one.</p></div>${place}</div>`;
       return `<div class="center"><div class="result-card ${r.correct ? "good" : "bad"}"><h3>${r.correct ? "Correct!" : "Not quite"}</h3>${r.correct ? `<div class="big-num">+${r.points.toLocaleString()}</div>${me.streak > 1 ? `<p>${me.streak} correct in a row</p>` : ""}` : `<p>The answer was ${LETTERS[q.correct]} · ${esc(q.options[q.correct])}</p>`}</div>${place}</div>`;
     }
     case "leaderboard":
       return `<div class="center"><span class="lbl">Your position</span><div class="big-num">${ordinal(me.rank)}</div><p>${me.score.toLocaleString()} points</p><p class="hint">${s.ahead ? `${s.ahead.gap.toLocaleString()} points behind ${esc(s.ahead.name)}` : "You're leading. Keep it up!"}</p></div>`;
-    case "podium":
-      return `<div class="center"><span class="lbl">Final position</span><div class="big-num">${ordinal(me.rank)}</div><p>${me.score.toLocaleString()} points</p><p class="hint">${me.rank <= 3 ? "You made the podium! Collect your prize at the help desk." : `Thanks for playing${s.event ? " at " + esc(s.event) : ""}.`}</p>
+    case "podium": {
+      const prizes = (s.my_prizes || []).length ? `<div class="result-card win"><span class="lbl">You won</span><h3>${s.my_prizes.map(esc).join(", ")}</h3><p>Collect at the help desk.</p></div>` : "";
+      if (!s.scored) return `<div class="center"><h2>That's a wrap!</h2>${prizes}<p class="hint">Thanks for joining${s.event ? " " + esc(s.event) : ""}.</p><button class="btn" data-act="done">Join another game</button></div>`;
+      return `<div class="center">${prizes}<span class="lbl">Final position</span><div class="big-num">${ordinal(me.rank)}</div><p>${me.score.toLocaleString()} points</p><p class="hint">${me.rank <= 3 ? "You made the podium! Collect your prize at the help desk." : `Thanks for playing${s.event ? " at " + esc(s.event) : ""}.`}</p>
         <button class="btn" data-act="done">Join another game</button></div>`;
+    }
   }
   return "";
 }
 
 function startTimer() {
   const s = P.state;
-  let shownUp = false;
+  // Re-render once when time runs out (to show "Time's up"), never from a render that already shows it.
+  let shownUp = s.q_ends_at <= clock.now() || s.question.type === "raffle";
   const step = () => {
     const el = $("ptimer");
     const left = Math.max(0, s.q_ends_at - clock.now());
@@ -147,8 +191,10 @@ function applyState(v) {
   const key = v.phase + ":" + v.qi;
   if (key !== P.lastKey) {
     P.pending = null;
+    P.typeErr = "";
+    P.typeMs = null;
     P.lastKey = key;
-    if (navigator.vibrate && v.phase === "reveal" && v.result) navigator.vibrate(v.result.correct ? [40] : [20, 60, 20]);
+    if (navigator.vibrate && v.phase === "reveal" && v.result) navigator.vibrate(v.result.won ? [60, 40, 60, 40, 200] : v.result.correct ? [40] : [20, 60, 20]);
   }
   P.state = v;
   wake.on();
@@ -239,6 +285,27 @@ async function answer(i) {
   if (P.state.phase === "question" && P.state.qi === s.qi) { P.state.my_answer = i; P.pending = null; render(); }
 }
 
+async function sendTyped() {
+  const s = P.state, el = $("typein");
+  if (!s || !el || shownPhase(s) !== "question" || s.question.type !== "type" || s.my_answer != null || P.busy) return;
+  const text = el.value;
+  if (!text.trim()) { el.focus(); return; }
+  P.busy = true; P.typeErr = ""; render();
+  const r = await rpc("submit_text", { p_player: P.session.player_id, p_token: P.session.token, p_qi: s.qi, p_text: text });
+  P.busy = false;
+  if (!P.state || P.state.qi !== s.qi || P.state.phase !== "question") return render();
+  if (r.wrong) {
+    P.typeErr = "Not quite. Check the spelling and try again.";
+    if (navigator.vibrate) navigator.vibrate([20, 40, 20]);
+    render();
+    const n = $("typein"); if (n) { n.focus(); n.select(); }
+    return;
+  }
+  if (r.error) { toast(r.error, true); render(); return; }
+  if (navigator.vibrate) navigator.vibrate(30);
+  P.typeMs = r.ms; P.state.my_answer = 0; render();
+}
+
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-act]");
   if (!b || b.disabled) return;
@@ -246,6 +313,7 @@ document.addEventListener("click", async (e) => {
     case "enterpin": enterPin(); break;
     case "join": join(); break;
     case "answer": answer(+b.dataset.i); break;
+    case "typesend": sendTyped(); break;
     case "changepin": P.step = "pin"; P.err = ""; render(); focusInput(); break;
     case "leave": {
       const s = P.session;
@@ -263,6 +331,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "pinin") enterPin();
   if (e.target.id === "nick") join();
+  if (e.target.id === "typein") sendTyped();
 });
 
 /* ---------- Start ---------- */

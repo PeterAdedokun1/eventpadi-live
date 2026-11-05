@@ -1,4 +1,10 @@
--- Eventpadi Live: real-time quiz game on Supabase.
+-- Eventpadi Live: real-time event games on Supabase.
+--
+-- A game is a list of rounds. Round types:
+--   quiz    multiple choice, scored for speed and streaks
+--   poll    multiple choice, no right answer
+--   type    "fastest fingers": type the word shown on the big screen, scored for speed
+--   raffle  draw random winners from the players who joined
 --
 -- All game logic lives in these functions. Browsers only call the RPCs granted
 -- at the bottom; every table has RLS on with no policies, so tables can't be
@@ -64,6 +70,17 @@ create table if not exists public.answers (
 );
 create index if not exists answers_game_q on public.answers (game_id, qi);
 
+-- Raffle winners. A forfeited winner (not in the room) was replaced by a redraw.
+create table if not exists public.winners (
+  game_id   uuid not null references public.games (id) on delete cascade,
+  qi        int  not null,
+  player_id uuid not null references public.players (id) on delete cascade,
+  place     int  not null,
+  forfeited boolean not null default false,
+  primary key (game_id, qi, player_id)
+);
+create index if not exists winners_game_player on public.winners (game_id, player_id);
+
 create table if not exists public.pin_attempts (
   ip     text not null,
   minute timestamptz not null,
@@ -76,6 +93,7 @@ alter table public.games        enable row level security;
 alter table public.players      enable row level security;
 alter table public.answers      enable row level security;
 alter table public.pin_attempts enable row level security;
+alter table public.winners      enable row level security;
 
 /* ---------------- Internal helpers ---------------- */
 
@@ -86,6 +104,10 @@ create or replace function public._clean(v text, max_len int) returns text
 language sql immutable as $$
   select btrim(left(btrim(regexp_replace(regexp_replace(coalesce(v, ''), '[[:cntrl:]]', '', 'g'), '\s+', ' ', 'g')), max_len))
 $$;
+
+-- Fastest-fingers comparison: ignore case, spaces and punctuation.
+create or replace function public._norm(v text) returns text
+language sql immutable as $$ select lower(regexp_replace(coalesce(v, ''), '[^[:alnum:]]', '', 'g')) $$;
 
 create or replace function public._err(msg text) returns jsonb
 language sql immutable as $$ select jsonb_build_object('error', msg) $$;
@@ -102,7 +124,9 @@ create or replace function public._public_state(g public.games) returns jsonb
 language plpgsql stable set search_path = public as $$
 declare
   q jsonb := case when g.qi >= 0 and g.qi < g.total then g.quiz -> 'questions' -> g.qi end;
+  open boolean := g.phase = 'question';
 begin
+  -- Never send a correct answer, a fastest-fingers word or raffle winners while a round is open.
   return jsonb_build_object(
     'game_id', g.id, 'pin', g.pin, 'phase', g.phase, 'qi', g.qi, 'total', g.total,
     'title', g.title, 'event', g.event, 'locked', g.locked, 'version', g.version,
@@ -112,9 +136,21 @@ begin
     'question', case when q is null or g.phase in ('lobby', 'podium', 'ended') then null else
       jsonb_build_object(
         'type', q ->> 'type', 'text', q ->> 'text', 'options', q -> 'options', 'time', (q ->> 'time')::int,
-        'correct', case when g.phase = 'question' then null else q -> 'correct' end)
+        'winners', (q ->> 'winners')::int,
+        'correct', case when open then null else q -> 'correct' end,
+        'answer', case when open then null else q -> 'answer' end,
+        'drawn', case when open or q ->> 'type' <> 'raffle' then null else coalesce((
+          select jsonb_agg(p.name order by w.place)
+          from public.winners w join public.players p on p.id = w.player_id
+          where w.game_id = g.id and w.qi = g.qi and not w.forfeited), '[]'::jsonb) end)
     end);
 end $$;
+
+-- Number of rounds that score points (quiz and fastest fingers).
+create or replace function public._scored_rounds(g public.games) returns int
+language sql immutable as $$
+  select count(*)::int from jsonb_array_elements(g.quiz -> 'questions') e where e ->> 'type' in ('quiz', 'type')
+$$;
 
 -- Bump the version and broadcast the new public state.
 create or replace function public._bump(p_game uuid) returns void
@@ -138,8 +174,20 @@ begin
   perform public._bump(p_game);
 end $$;
 
--- Close the current question and score it.
--- Correct answer: 500–1000 points for speed, +100 per consecutive correct answer (max +500). Polls score nothing.
+-- Raffle: record each player's personal result for the current round.
+create or replace function public._raffle_results(p_game uuid, p_qi int) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  update public.players p set last = jsonb_build_object('raffle', true, 'won', w.place is not null, 'place', w.place)
+  from public.players p2
+  left join public.winners w on w.player_id = p2.id and w.game_id = p_game and w.qi = p_qi and not w.forfeited
+  where p2.game_id = p_game and p.id = p2.id;
+end $$;
+
+-- Close the current round and score it.
+--   quiz: correct answer earns 500–1000 points for speed, +100 per consecutive correct answer (max +500)
+--   type: typing the word earns 500–1000 points for speed (only correct entries are stored)
+--   poll: no points.  raffle: draw the winners now.
 create or replace function public._reveal(p_game uuid) returns void
 language plpgsql security definer set search_path = public as $$
 declare
@@ -153,25 +201,54 @@ begin
   if g.phase <> 'question' then return; end if;
   q := g.quiz -> 'questions' -> g.qi;
   v_type := q ->> 'type';
+
+  if v_type = 'raffle' then
+    -- Random draw. People who already won a raffle in this game go to the back of the queue.
+    insert into public.winners (game_id, qi, player_id, place)
+    select g.id, g.qi, t.id, row_number() over (order by t.won, t.r)
+    from (
+      select p.id, random() as r,
+             exists (select 1 from public.winners w where w.game_id = g.id and w.player_id = p.id and not w.forfeited) as won
+      from public.players p where p.game_id = g.id
+      order by won, r
+      limit greatest(1, coalesce((q ->> 'winners')::int, 1))
+    ) t
+    on conflict do nothing;
+    perform public._raffle_results(g.id, g.qi);
+    update public.games set phase = 'reveal' where id = g.id;
+    perform public._bump(g.id);
+    return;
+  end if;
+
   v_correct := (q ->> 'correct')::int;
   v_limit := (q ->> 'time')::int * 1000;
 
-  update public.players p set
-    score = p.score + x.points,
-    streak = case when v_type <> 'quiz' then p.streak when x.correct then p.streak + 1 else 0 end,
-    correct_count = p.correct_count + x.correct::int,
-    last = jsonb_build_object('answered', x.choice is not null, 'choice', x.choice, 'correct', x.correct, 'points', x.points)
-  from (
-    select p2.id, a.choice,
-      coalesce(v_type = 'quiz' and a.choice = v_correct, false) as correct,
-      case when v_type = 'quiz' and a.choice = v_correct
-        then round(1000 * (1 - least(a.ms, v_limit)::numeric / v_limit / 2))::int + least(p2.streak, 5) * 100
-        else 0 end as points
+  with a as (
+    select player_id, choice, ms, rank() over (order by ms) as place
+    from public.answers where game_id = g.id and qi = g.qi
+  ), x as (
+    select p2.id, a.choice, a.ms, a.place, p2.streak,
+      coalesce(case v_type when 'quiz' then a.choice = v_correct when 'type' then a.choice is not null else false end, false) as correct
     from public.players p2
-    left join public.answers a on a.player_id = p2.id and a.qi = g.qi
+    left join a on a.player_id = p2.id
     where p2.game_id = g.id
-  ) x
-  where p.id = x.id;
+  ), y as (
+    select x.*,
+      case when x.correct
+        then round(1000 * (1 - least(x.ms, v_limit)::numeric / v_limit / 2))::int
+             + case when v_type = 'quiz' then least(x.streak, 5) * 100 else 0 end
+        else 0 end as points
+    from x
+  )
+  update public.players p set
+    score = p.score + y.points,
+    streak = case when v_type <> 'quiz' then p.streak when y.correct then p.streak + 1 else 0 end,
+    correct_count = p.correct_count + y.correct::int,
+    last = jsonb_build_object('answered', y.choice is not null, 'choice', y.choice, 'correct', y.correct, 'points', y.points,
+                              'ms', case when v_type = 'type' then y.ms end,
+                              'place', case when v_type = 'type' then y.place end)
+  from y
+  where p.id = y.id;
 
   update public.games set phase = 'reveal' where id = g.id;
   perform public._bump(g.id);
@@ -208,6 +285,7 @@ declare
   v_opts jsonb;
   v_correct int;
   v_time int;
+  v_word text;
   o text;
   v_pin text;
   g public.games;
@@ -220,15 +298,35 @@ begin
     return public._err('The server is busy. Try again in a few minutes.');
   end if;
 
-  if jsonb_typeof(p_quiz -> 'questions') is distinct from 'array' then return public._err('Add at least one question.'); end if;
+  if jsonb_typeof(p_quiz -> 'questions') is distinct from 'array' then return public._err('Add at least one round.'); end if;
   v_n := jsonb_array_length(p_quiz -> 'questions');
-  if v_n = 0 then return public._err('Add at least one question.'); end if;
-  if v_n > 100 then return public._err('A quiz can have at most 100 questions.'); end if;
+  if v_n = 0 then return public._err('Add at least one round.'); end if;
+  if v_n > 100 then return public._err('A game can have at most 100 rounds.'); end if;
 
   for i in 0 .. v_n - 1 loop
     x := p_quiz -> 'questions' -> i;
-    v_type := case when x ->> 'type' = 'poll' then 'poll' else 'quiz' end;
+    v_type := case when x ->> 'type' in ('poll', 'type', 'raffle') then x ->> 'type' else 'quiz' end;
     v_text := public._clean(x ->> 'text', 200);
+
+    if v_type = 'type' then
+      v_word := public._clean(x ->> 'answer', 40);
+      if public._norm(v_word) = '' then
+        return jsonb_build_object('error', format('Round %s: enter the word or phrase players must type.', i + 1), 'index', i);
+      end if;
+      v_time := case when x ->> 'time' in ('10', '15', '20', '30', '45', '60', '90', '120') then (x ->> 'time')::int else 30 end;
+      v_qs := v_qs || jsonb_build_object('type', 'type', 'text', coalesce(nullif(v_text, ''), 'Type the word on the big screen'),
+                                         'options', '[]'::jsonb, 'answer', v_word, 'norm', public._norm(v_word), 'time', v_time);
+      continue;
+    elsif v_type = 'raffle' then
+      if v_text = '' then
+        return jsonb_build_object('error', format('Round %s: what is the raffle prize?', i + 1), 'index', i);
+      end if;
+      v_qs := v_qs || jsonb_build_object('type', 'raffle', 'text', v_text, 'options', '[]'::jsonb, 'time', 6,
+                                         'winners', case when x ->> 'winners' ~ '^\d{1,2}$'
+                                                         then least(20, greatest(1, (x ->> 'winners')::int)) else 1 end);
+      continue;
+    end if;
+
     if v_text = '' then
       return jsonb_build_object('error', format('Question %s needs some text.', i + 1), 'index', i);
     end if;
@@ -289,6 +387,25 @@ begin
     v := v || jsonb_build_object('players', coalesce((
       select jsonb_agg(jsonb_build_object('id', id, 'name', name) order by joined_at)
       from public.players where game_id = g.id), '[]'::jsonb));
+  elsif g.phase = 'question' and q ->> 'type' = 'type' then
+    v := v || jsonb_build_object('word', q ->> 'answer');   -- shown only on the big screen
+  elsif g.phase = 'question' and q ->> 'type' = 'raffle' then
+    v := v || jsonb_build_object('pool', coalesce((         -- names for the spinning draw animation
+      select jsonb_agg(name) from (select name from public.players where game_id = g.id order by random() limit 60) t), '[]'::jsonb));
+  elsif g.phase = 'reveal' and q ->> 'type' = 'type' then
+    v := v || jsonb_build_object('fastest', coalesce((
+      select jsonb_agg(jsonb_build_object('name', p.name, 'ms', a.ms) order by a.ms, a.created_at)
+      from (select * from public.answers where game_id = g.id and qi = g.qi order by ms, created_at limit 10) a
+      join public.players p on p.id = a.player_id), '[]'::jsonb));
+  elsif g.phase = 'reveal' and q ->> 'type' = 'raffle' then
+    v := v || jsonb_build_object(
+      'winner_list', coalesce((
+        select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.name, 'place', w.place) order by w.place)
+        from public.winners w join public.players p on p.id = w.player_id
+        where w.game_id = g.id and w.qi = g.qi and not w.forfeited), '[]'::jsonb),
+      'can_redraw', exists (
+        select 1 from public.players p where p.game_id = g.id
+          and not exists (select 1 from public.winners w where w.game_id = g.id and w.qi = g.qi and w.player_id = p.id)));
   elsif g.phase = 'reveal' then
     v := v || jsonb_build_object('counts', (
       select jsonb_agg(coalesce(c.n, 0) order by i)
@@ -301,11 +418,21 @@ begin
                                           'delta', coalesce((last ->> 'points')::int, 0)) order by score desc, joined_at)
       from (select * from public.players where game_id = g.id order by score desc, joined_at limit 5) t), '[]'::jsonb));
   elsif g.phase = 'podium' then
-    v := v || jsonb_build_object('results', coalesce((
-      select jsonb_agg(jsonb_build_object('rank', rn, 'name', name, 'score', score, 'correct', correct_count,
-                                          'of', (select count(*) from jsonb_array_elements(g.quiz -> 'questions') e where e ->> 'type' = 'quiz'))
-                       order by rn)
-      from (select *, row_number() over (order by score desc, joined_at) rn from public.players where game_id = g.id) t), '[]'::jsonb));
+    v := v || jsonb_build_object(
+      'scored', public._scored_rounds(g),
+      'results', coalesce((
+        select jsonb_agg(jsonb_build_object('rank', rn, 'name', name, 'score', score, 'correct', correct_count,
+                                            'of', public._scored_rounds(g), 'prizes', prizes)
+                         order by rn)
+        from (select t.*, row_number() over (order by score desc, joined_at) rn,
+                     (select coalesce(jsonb_agg(g.quiz -> 'questions' -> w.qi ->> 'text' order by w.qi), '[]'::jsonb)
+                      from public.winners w where w.game_id = g.id and w.player_id = t.id and not w.forfeited) prizes
+              from public.players t where t.game_id = g.id) t), '[]'::jsonb),
+      'raffles', coalesce((
+        select jsonb_agg(jsonb_build_object('prize', g.quiz -> 'questions' -> r.qi ->> 'text', 'winners', r.names) order by r.qi)
+        from (select w.qi, jsonb_agg(p.name order by w.place) names
+              from public.winners w join public.players p on p.id = w.player_id
+              where w.game_id = g.id and not w.forfeited group by w.qi) r), '[]'::jsonb));
   end if;
   return v;
 end $$;
@@ -315,6 +442,8 @@ language plpgsql security definer set search_path = public as $$
 declare
   g public.games;
   v_pid uuid;
+  v_new uuid;
+  v_place int;
 begin
   select * into g from public.games where id = p_game and host_token = p_token for update;
   if not found then return public._err('You''re not hosting this game.'); end if;
@@ -334,7 +463,7 @@ begin
   elsif p_action = 'next' then
     if g.phase = 'question' then
       perform public._reveal(g.id);
-    elsif g.phase = 'reveal' and g.quiz -> 'questions' -> g.qi ->> 'type' = 'quiz' then
+    elsif g.phase = 'reveal' and g.quiz -> 'questions' -> g.qi ->> 'type' in ('quiz', 'type') then
       update public.games set phase = 'leaderboard' where id = g.id;
       perform public._bump(g.id);
     elsif g.phase in ('reveal', 'leaderboard') then
@@ -353,6 +482,27 @@ begin
       perform public._send('game:' || g.id, 'kicked', jsonb_build_object('player_id', v_pid));
       perform public._send('host:' || g.host_token, 'players', '{}'::jsonb);
     end if;
+
+  elsif p_action = 'redraw' then
+    -- Replace a raffle winner who isn't in the room with a new random winner.
+    if g.phase <> 'reveal' or g.quiz -> 'questions' -> g.qi ->> 'type' <> 'raffle' then
+      return public._err('You can only redraw while showing raffle winners.');
+    end if;
+    v_pid := (p_arg ->> 'player_id')::uuid;
+    select place into v_place from public.winners
+    where game_id = g.id and qi = g.qi and player_id = v_pid and not forfeited;
+    if not found then return public._err('That person isn''t a current winner.'); end if;
+    -- Prefer people who haven't won anything in this game yet.
+    select p.id into v_new from public.players p
+    where p.game_id = g.id
+      and not exists (select 1 from public.winners w where w.game_id = g.id and w.qi = g.qi and w.player_id = p.id)
+    order by exists (select 1 from public.winners w where w.game_id = g.id and w.player_id = p.id and not w.forfeited), random()
+    limit 1;
+    if v_new is null then return public._err('There''s no one left to draw.'); end if;
+    update public.winners set forfeited = true where game_id = g.id and qi = g.qi and player_id = v_pid;
+    insert into public.winners (game_id, qi, player_id, place) values (g.id, g.qi, v_new, v_place);
+    perform public._raffle_results(g.id, g.qi);
+    perform public._bump(g.id);
 
   elsif p_action = 'lock' then
     update public.games set locked = coalesce((p_arg ->> 'locked')::boolean, not locked) where id = g.id;
@@ -444,6 +594,11 @@ begin
   if g.phase = 'reveal' then
     v := v || jsonb_build_object('result', coalesce(p.last, '{"answered": false, "correct": false, "points": 0}'::jsonb));
   end if;
+  if g.phase = 'podium' then
+    v := v || jsonb_build_object('scored', public._scored_rounds(g), 'my_prizes', (
+      select coalesce(jsonb_agg(g.quiz -> 'questions' -> w.qi ->> 'text' order by w.qi), '[]'::jsonb)
+      from public.winners w where w.game_id = g.id and w.player_id = p.id and not w.forfeited));
+  end if;
   if v_rank > 1 and g.phase in ('reveal', 'leaderboard', 'podium') then
     select name, score into a from public.players
     where game_id = g.id and (score > p.score or (score = p.score and joined_at < p.joined_at))
@@ -490,6 +645,50 @@ begin
   return jsonb_build_object('ok', true, 'server_now', public._ms(clock_timestamp()));
 end $$;
 
+-- Fastest fingers: only a correct entry is stored; a wrong one just says "try again".
+create or replace function public.submit_text(p_player uuid, p_token uuid, p_qi int, p_text text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  p public.players;
+  g public.games;
+  q jsonb;
+  t timestamptz := clock_timestamp();
+  v_limit int;
+  v_ms int;
+  v_answered int;
+  v_players int;
+begin
+  select * into p from public.players where id = p_player and token = p_token;
+  if not found then return public._err('You''re not in this game.'); end if;
+  select * into g from public.games where id = p.game_id for update;
+  if g.phase <> 'question' or g.qi <> p_qi then return public._err('Too late, this round has closed.'); end if;
+  q := g.quiz -> 'questions' -> g.qi;
+  if q ->> 'type' <> 'type' then return public._err('This round doesn''t take typed answers.'); end if;
+  if t < g.q_starts_at - interval '250 milliseconds' then return public._err('Wait for the round to start.'); end if;
+  if t > g.q_ends_at + interval '500 milliseconds' then return public._err('Too late, this round has closed.'); end if;
+  if exists (select 1 from public.answers where player_id = p.id and qi = g.qi) then
+    return public._err('You''ve already got this one.');
+  end if;
+
+  if public._norm(left(p_text, 200)) <> q ->> 'norm' then
+    return jsonb_build_object('ok', false, 'wrong', true, 'server_now', public._ms(clock_timestamp()));
+  end if;
+
+  v_limit := (q ->> 'time')::int * 1000;
+  v_ms := greatest(0, least(v_limit, (extract(epoch from (t - g.q_starts_at)) * 1000)::int));
+  insert into public.answers (game_id, player_id, qi, choice, ms) values (g.id, p.id, g.qi, 0, v_ms)
+  on conflict do nothing;
+
+  select count(*) into v_answered from public.answers where game_id = g.id and qi = g.qi;
+  select count(*) into v_players from public.players where game_id = g.id;
+  if v_answered >= v_players then
+    perform public._reveal(g.id);  -- everyone has typed it: close the round now
+  else
+    perform public._send('host:' || g.host_token, 'answered', jsonb_build_object('answered', v_answered, 'players', v_players));
+  end if;
+  return jsonb_build_object('ok', true, 'ms', v_ms, 'server_now', public._ms(clock_timestamp()));
+end $$;
+
 create or replace function public.leave_game(p_player uuid, p_token uuid) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare g public.games;
@@ -515,6 +714,7 @@ grant execute on function
   public.join_game(uuid, text),
   public.player_view(uuid, uuid),
   public.submit_answer(uuid, uuid, int, int),
+  public.submit_text(uuid, uuid, int, text),
   public.leave_game(uuid, uuid)
 to anon, authenticated;
 
