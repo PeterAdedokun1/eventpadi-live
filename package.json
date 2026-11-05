@@ -6,7 +6,8 @@
     "dev": "node scripts/dev.js",
     "setup": "node scripts/setup-supabase.mjs",
     "test": "node test/live.mjs",
-    "deploy": "npx vercel deploy --prod"
+    "deploy": "npx vercel deploy --prod",
+    "load": "node test/load.mjs"
   },
   "private": true,
   "engines": {

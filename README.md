@@ -80,7 +80,42 @@ Local development: `npm run dev`, then open http://localhost:3000/host. It uses 
 
 ## Capacity
 
-Each phone holds one Supabase Realtime connection. **The Supabase Free plan allows 200 concurrent Realtime connections; Pro allows 500 and can be raised.** For events with more than about 190 players, upgrade the project to Pro before the event. Free projects also pause after a week of inactivity; open the dashboard and restore the project before your event if that happens.
+**Measured** (`test/load.mjs`, 150 simulated phones in one game, Supabase Free plan, London region, tested from Lagos): every phone connected, with no errors. Phones saw each new screen a median 0.2 s after the host acted (95% within 1.3 s). Answers saved in 0.2 s (95% within 0.5 s). Personal results loaded in 0.2 s (95% within 0.6 s). A round closed about 0.2 s after the last answer.
+
+**Limits that matter**, Free plan versus Pro:
+
+| | Free | Pro ($25/month) |
+|---|---|---|
+| Phones connected at the same time (all games together) | 200 | 500 included, can be raised |
+| Realtime messages per month | 2 million | 5 million, then pay per million |
+| Sign-ups (monthly active organisers) | 50,000 | 100,000 |
+| Database | 500 MB | 8 GB |
+| Pauses after a week without activity | Yes | No |
+
+A rough budget: one 10-round game with 100 players uses about 5,000 Realtime messages (every phone receives each screen change). Free covers about 400 such games a month. Storage per game is tiny (a few hundred KB of results), but question images and logos use the 1 GB Storage allowance on Free.
+
+**What happens at the limit.** If the 200 connections are full, new phones still join and play. Their live connection is refused, so after a few tries they switch to refreshing every 3–4 seconds and show "Live updates are busy". The game keeps working, just a little less instantly for those phones. The host screen does the same.
+
+**When to upgrade to Pro.** Upgrade before any single event expects more than about 150 players, or when several games will run at the same time with more than 200 phones in total. Also upgrade once usage nears the monthly message allowance: check Supabase → Project → Usage. No code changes are needed. To raise the connection limit beyond 500, change it in the project's Realtime settings.
+
+**Built-in protection:**
+- Each organiser can run 3 live games at once and save up to 300 games.
+- The whole service accepts up to 500 open games at a time.
+- Each game accepts up to 1,000 players.
+- Wrong game PINs are limited to 60 per IP address per minute.
+- Reactions are limited to one every 0.8 s per phone.
+- The error log accepts 20 reports per IP address per minute.
+
+**Monitoring.** Browser errors, and database calls that fail, are recorded in the `client_errors` table and kept for 14 days. Check them after each event:
+
+```sql
+select created_at, page, message, detail, game_id from client_errors order by created_at desc limit 100;
+```
+
+**Before a big event:**
+1. Run the load test with roughly the expected number of players: `PLAYERS=150 npm run load`. Stay below 190 on Free.
+2. Open the Supabase dashboard to make sure the project isn't paused.
+3. Rehearse on the venue Wi-Fi.
 
 ## Files
 
@@ -96,6 +131,7 @@ public/css/styles.css                      All styles; brand tokens in :root (--
 scripts/setup-supabase.mjs                 Creates the project, applies SQL, writes config
 scripts/dev.js                             Local static server
 test/live.mjs                              End-to-end test against the real Supabase project
+test/load.mjs                              Load test: many simulated phones in one game
 vercel.json                                Static hosting, routes, security headers
 ```
 

@@ -106,7 +106,22 @@ create table if not exists public.pin_attempts (
   primary key (ip, minute)
 );
 
+-- Errors reported by browsers (for monitoring). Read them in the Supabase dashboard:
+--   select * from client_errors order by created_at desc limit 100;
+create table if not exists public.client_errors (
+  id         bigint generated always as identity primary key,
+  created_at timestamptz not null default now(),
+  page       text not null,
+  message    text not null,
+  detail     text,
+  game_id    uuid,
+  user_agent text,
+  ip         text
+);
+create index if not exists client_errors_time on public.client_errors (created_at desc);
+
 alter table public.settings     enable row level security;
+alter table public.client_errors enable row level security;
 alter table public.games        enable row level security;
 alter table public.players      enable row level security;
 alter table public.answers      enable row level security;
@@ -321,6 +336,7 @@ begin
   -- Lobbies that never started are not worth keeping.
   delete from public.games where phase = 'ended' and started_at is null and updated_at < now() - interval '1 day';
   delete from public.pin_attempts where minute < now() - interval '10 minutes';
+  delete from public.client_errors where created_at < now() - interval '14 days';
 end $$;
 
 /* ---------------- Host API ---------------- */
@@ -921,6 +937,26 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+/* ---------------- Monitoring ---------------- */
+
+-- Browsers report uncaught errors here. Limited to 20 per IP per minute and 5,000 per hour overall.
+create or replace function public.log_client_error(p_page text, p_message text, p_detail text default null, p_game uuid default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_headers jsonb := nullif(current_setting('request.headers', true), '')::jsonb;
+  v_ip text := coalesce(nullif(v_headers ->> 'cf-connecting-ip', ''),
+                        nullif(btrim(split_part(coalesce(v_headers ->> 'x-forwarded-for', ''), ',', 1)), ''), 'unknown');
+begin
+  if (select count(*) from public.client_errors where ip = v_ip and created_at > now() - interval '1 minute') >= 20
+     or (select count(*) from public.client_errors where created_at > now() - interval '1 hour') >= 5000 then
+    return jsonb_build_object('ok', false);
+  end if;
+  insert into public.client_errors (page, message, detail, game_id, user_agent, ip)
+  values (left(coalesce(p_page, ''), 40), left(coalesce(p_message, ''), 500), left(p_detail, 2000), p_game,
+          left(v_headers ->> 'user-agent', 300), v_ip);
+  return jsonb_build_object('ok', true);
+end $$;
+
 /* ---------------- Permissions ---------------- */
 
 revoke all on all tables in schema public from anon, authenticated;
@@ -933,6 +969,7 @@ grant execute on function
   public.player_view(uuid, uuid),
   public.submit_answer(uuid, uuid, int, int),
   public.submit_text(uuid, uuid, int, text),
+  public.log_client_error(text, text, text, uuid),
   public.leave_game(uuid, uuid)
 to anon, authenticated;
 grant execute on function

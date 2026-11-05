@@ -334,6 +334,7 @@ body.play-page.joining { background: var(--grad); background-attachment: fixed; 
 .big-num { font-family: var(--display); font-weight: 800; font-size: 56px; line-height: 1; font-variant-numeric: tabular-nums; }
 .center > .big-num { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; font-size: 72px; }
 .offline { background: var(--bad); color: #fff; text-align: center; font-size: 13px; font-weight: 700; padding: 7px; }
+.offline.soft { background: #fff3dc; color: #7a4a00; font-weight: 500; }
 
 /* ---------- Round types ---------- */
 .t-quiz   { --tc: #9b0eed; --tc-50: #f6ecfe; --tc-grad: var(--grad); }

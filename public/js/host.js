@@ -618,6 +618,7 @@ function gameOver(reason) {
 
 // Safety net: re-read state regularly, faster while the realtime connection is down.
 setInterval(() => { if (H.session && !H.connected) refresh(); }, 3000);
+window.__epGame = () => H.session && H.session.game_id;
 setInterval(() => { if (H.session) refresh(); }, 15000);
 
 async function openLobby() {

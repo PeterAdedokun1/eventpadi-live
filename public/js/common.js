@@ -182,6 +182,7 @@ async function rpc(fn, args) {
   if (res.error) {
     console.error(fn, res.error);
     const network = !res.status || /fetch|network|timeout/i.test(res.error.message || "");
+    if (!network) reportError(`rpc ${fn} failed (${res.status})`, res.error.message);
     return { error: network ? NET_ERR : "Something went wrong. Please try again.", network };
   }
   const d = res.data || {};
@@ -203,3 +204,26 @@ function shownPhase(s) {
   if (s.phase === "question" && clock.now() < s.q_starts_at) return "intro";
   return s.phase;
 }
+
+/* ---------- Monitoring ----------
+   Uncaught errors and failed database calls are reported to the client_errors table
+   (rate-limited in the database; at most 5 reports per page load). */
+let errReports = 0;
+function reportError(message, detail) {
+  if (errReports++ >= 5 || !CFG.supabaseUrl) return;
+  const game = typeof window.__epGame === "function" ? window.__epGame() : null;
+  sb.rpc("log_client_error", {
+    p_page: IS_HOST ? "host" : "play",
+    p_message: String(message || "").slice(0, 500),
+    p_detail: detail ? String(detail).slice(0, 2000) : null,
+    p_game: game || null
+  }).then(() => {}, () => {});
+}
+window.addEventListener("error", (e) => {
+  if (e.filename && !e.filename.startsWith(location.origin)) return;   // browser extensions etc.
+  reportError(e.message, `${(e.error && e.error.stack) || ""} @ ${e.filename}:${e.lineno}:${e.colno}`);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e.reason || {};
+  reportError("Unhandled promise rejection: " + (r.message || r), r.stack);
+});

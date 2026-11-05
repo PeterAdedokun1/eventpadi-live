@@ -8,6 +8,8 @@ const P = {
   step: "pin",          // pin | nick (only used when not in a game)
   avatar: AVATARS.includes(store.get("ep-live:avatar")) ? store.get("ep-live:avatar") : AVATARS[Math.floor(Math.random() * AVATARS.length)],
   reactAt: 0,
+  degradeTimer: null,
+  degraded: false,      // realtime unavailable (e.g. connection limit): rely on polling
   pin: "",
   gameId: null,
   info: null,           // { event, title } from the PIN check
@@ -34,7 +36,9 @@ function render() {
   const ph = s ? shownPhase(s) : null;
   const timer = ph === "question" && s.question.type !== "raffle" ? `<span class="ptimer" id="ptimer"></span>` : "";
   const top = `<div class="phone-top"><span>${s ? `PIN <b>${esc(s.pin)}</b>` : esc(location.host)}</span>${timer}<span>${me ? `${av(me.avatar)}<b>${esc(me.name)}</b>` : "Eventpadi Live"}</span></div>`;
-  const off = P.session && !P.connected && !P.resuming ? `<div class="offline" role="status">Reconnecting…</div>` : "";
+  const off = P.session && !P.connected && !P.resuming
+    ? (P.degraded ? `<div class="offline soft" role="status">Live updates are busy. Your screen refreshes every few seconds.</div>` : `<div class="offline" role="status">Reconnecting…</div>`)
+    : "";
   const foot = me && s.phase !== "lobby" ? `<div class="phone-foot"><span>${esc(me.name)}</span><span>${me.score.toLocaleString()} pts</span></div>` : "";
   document.body.classList.toggle("joining", !s);
   applyTheme(s ? s.theme : P.step === "nick" && P.info ? P.info.theme : null);
@@ -227,7 +231,7 @@ function onBroadcast(st) {
   if (st.phase === "ended") return backToStart("The host ended the game.");
   if (P.state && st.version <= P.state.version) return;
   if (["reveal", "leaderboard", "podium"].includes(st.phase) || !P.state) {
-    setTimeout(fetchView, Math.random() * 500);
+    setTimeout(fetchView, Math.random() * 900);
     return;
   }
   const prev = P.state;
@@ -242,13 +246,19 @@ function connect() {
   }, (status) => {
     const on = status === "SUBSCRIBED";
     if (on && !P.connected) fetchView();   // catch up on anything missed while offline
+    // Several failed attempts usually means the realtime service is full: keep playing by polling.
+    // Not back within 8 s usually means the realtime service is full: say so calmly and keep playing by polling.
+    clearTimeout(P.degradeTimer);
+    if (on) P.degraded = false;
+    else P.degradeTimer = setTimeout(() => { if (P.session && !P.connected) { P.degraded = true; render(); } }, 8000);
     P.connected = on;
     if (P.state) render();
   });
 }
 
 // Safety net: re-read regularly, faster while the realtime connection is down.
-setInterval(() => { if (P.session && !P.connected) fetchView(); }, 4000);
+setInterval(() => { if (P.session && !P.connected) fetchView(); }, 3000 + Math.random() * 1500);
+window.__epGame = () => P.session && P.session.game_id;
 setInterval(() => { if (P.session) fetchView(); }, 20000);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && P.session) fetchView(); });
 
