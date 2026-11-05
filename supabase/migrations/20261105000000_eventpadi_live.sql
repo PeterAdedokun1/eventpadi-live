@@ -147,6 +147,15 @@ language sql immutable as $$
   )
 $$;
 
+-- Event branding, cleaned: colour (#rrggbb), logo (from this project's image bucket), sponsor line.
+create or replace function public._theme(t jsonb) returns jsonb
+language sql immutable as $$
+  select jsonb_strip_nulls(jsonb_build_object(
+    'color', case when t ->> 'color' ~ '^#[0-9a-fA-F]{6}$' then lower(t ->> 'color') end,
+    'logo', case when t ->> 'logo' ~ '^https://[a-z0-9]+\.supabase\.co/storage/v1/object/public/quiz-images/[A-Za-z0-9/_.-]{1,200}$' then t ->> 'logo' end,
+    'sponsor', nullif(public._clean(t ->> 'sponsor', 60), '')))
+$$;
+
 create or replace function public._err(msg text) returns jsonb
 language sql immutable as $$ select jsonb_build_object('error', msg) $$;
 
@@ -168,6 +177,7 @@ begin
   return jsonb_build_object(
     'game_id', g.id, 'pin', g.pin, 'phase', g.phase, 'qi', g.qi, 'total', g.total,
     'title', g.title, 'event', g.event, 'locked', g.locked, 'version', g.version,
+    'theme', coalesce(g.quiz -> 'theme', '{}'::jsonb),
     'q_starts_at', public._ms(g.q_starts_at), 'q_ends_at', public._ms(g.q_ends_at),
     'server_now', public._ms(clock_timestamp()),
     'is_last', g.qi = g.total - 1,
@@ -401,7 +411,7 @@ begin
     v_pin := (100000 + floor(random() * 900000))::int::text;
     begin
       insert into public.games (owner, quiz_id, pin, quiz, title, event, total)
-      values (v_uid, p_quiz_id, v_pin, jsonb_build_object('questions', v_qs),
+      values (v_uid, p_quiz_id, v_pin, jsonb_build_object('questions', v_qs, 'theme', public._theme(p_quiz -> 'theme')),
               coalesce(nullif(public._clean(p_quiz ->> 'title', 80), ''), 'Live quiz'),
               public._clean(p_quiz ->> 'event', 80), v_n)
       returning * into g;
@@ -598,7 +608,8 @@ begin
   end if;
   if g.phase = 'podium' then return public._err('This game has finished.'); end if;
   if g.locked then return public._err('The host has locked this game.'); end if;
-  return jsonb_build_object('ok', true, 'game_id', g.id, 'title', g.title, 'event', g.event);
+  return jsonb_build_object('ok', true, 'game_id', g.id, 'title', g.title, 'event', g.event,
+                            'theme', coalesce(g.quiz -> 'theme', '{}'::jsonb));
 end $$;
 
 drop function if exists public.join_game(uuid, text);

@@ -41,6 +41,8 @@ Scoring: a correct quiz answer earns 500 to 1000 points depending on speed, plus
 
 Host controls: kick a player (click their name in the lobby), lock or unlock joining, +10 seconds on an open round, end the question early, end the game, sound on/off, full screen, and a CSV download of results. Space, Enter or → advances from the reveal and scoreboard screens.
 
+Event branding: each game can carry the organiser's colour, logo and a sponsor line. They appear on the projector (top bar, lobby, during rounds, final screen) and on phones (join screen and lobby). Colours too light for white text are darkened automatically to meet WCAG AA contrast. The organiser's dashboard and editor stay in Eventpadi colours.
+
 Engagement:
 - **Avatars.** Players pick an emoji avatar when they join; it shows in the lobby, scoreboards, raffle draws and on the podium.
 - **Nickname filter.** Offensive nicknames are refused (whole-word match, so real names like "Dickson" are fine).

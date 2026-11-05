@@ -26,6 +26,49 @@ const store = {
   del(key, area = localStorage) { try { area.removeItem(key); } catch { /* ignore */ } }
 };
 
+/* ---------- Event branding ----------
+   A game can carry a theme { color, logo, sponsor }. The colour becomes the accent
+   palette; colours too light for white text are darkened until they pass WCAG AA. */
+const hexRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+function rgbHsl([r, g, b]) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l];
+  const d = mx - mn, s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  const h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+function hslHex(h, s, l) {
+  h = ((h % 360) + 360) % 360; s = Math.min(1, Math.max(0, s)); l = Math.min(1, Math.max(0, l));
+  const k = (n) => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return "#" + [f(0), f(8), f(4)].map((x) => Math.round(x * 255).toString(16).padStart(2, "0")).join("");
+}
+function contrastWithWhite(hex) {
+  const lin = hexRgb(hex).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 1.05 / (0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2] + 0.05);
+}
+const THEME_VARS = ["--accent", "--accent-600", "--accent-50", "--accent-100", "--accent-ink", "--grad"];
+let themeKey = "";
+function applyTheme(t) {
+  const color = t && /^#[0-9a-f]{6}$/i.test(t.color || "") ? t.color.toLowerCase() : "";
+  if (color === themeKey) return;
+  themeKey = color;
+  const root = document.documentElement.style;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (!color) { THEME_VARS.forEach((v) => root.removeProperty(v)); if (meta) meta.content = "#9b0eed"; return; }
+  let [h, s, l] = rgbHsl(hexRgb(color));
+  while (contrastWithWhite(hslHex(h, s, l)) < 4.5 && l > 0.08) l -= 0.02;
+  const accent = hslHex(h, s, l);
+  root.setProperty("--accent", accent);
+  root.setProperty("--accent-600", hslHex(h, s, l * 0.86));
+  root.setProperty("--accent-ink", hslHex(h, s, Math.min(l, 0.3)));
+  root.setProperty("--accent-50", hslHex(h, Math.min(s, 0.8), 0.965));
+  root.setProperty("--accent-100", hslHex(h, Math.min(s, 0.75), 0.9));
+  root.setProperty("--grad", `linear-gradient(135deg, ${hslHex(h - 8, s, Math.min(l + 0.12, 0.62))} 0%, ${accent} 45%, ${hslHex(h + 10, s, l * 0.72)} 100%)`);
+  if (meta) meta.content = accent;
+}
+const themeLogo = (t, cls = "event-logo") => (t && t.logo ? `<img class="${cls}" src="${esc(t.logo)}" alt="Event logo">` : "");
+
 /* Small notification at the bottom of the screen. */
 let toastTimer;
 function toast(msg, bad = false) {

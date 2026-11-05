@@ -27,6 +27,7 @@ function normaliseQuiz(raw) {
     id: raw && isUuid(raw.id) ? raw.id : null,   // id of the saved game in the account, once saved
     event: String((raw && raw.event) || ""),
     title: String((raw && raw.title) || "Untitled game"),
+    theme: normaliseTheme(raw && raw.theme),
     questions: (qs.length ? qs : [blankQ()]).slice(0, 100).map((x) => {
       const options = (Array.isArray(x.options) ? x.options : []).slice(0, 4).map(String);
       while (options.length < 4) options.push("");
@@ -44,6 +45,16 @@ function normaliseQuiz(raw) {
     })
   };
 }
+
+function normaliseTheme(t) {
+  t = t || {};
+  return {
+    color: /^#[0-9a-f]{6}$/i.test(t.color || "") ? t.color.toLowerCase() : "",
+    logo: typeof t.logo === "string" && /^https:\/\//.test(t.logo) ? t.logo : "",
+    sponsor: String(t.sponsor || "").slice(0, 60)
+  };
+}
+const BRAND_COLORS = ["#9b0eed", "#e3354d", "#db2777", "#ea580c", "#cf8500", "#16a34a", "#0d8f80", "#2366d6", "#1e3a8a", "#111827"];
 
 /* One line describing a round, for the editor list. */
 function roundMeta(x) {
@@ -138,6 +149,7 @@ function render() {
     else body = ({ reset: resetView, home: homeView, edit: setupView, report: reportView }[H.view === "edit" && !H.quiz ? "home" : H.view] || homeView)();
   }
   else body = { lobby: lobbyView, intro: introView, question: questionView, reveal: revealView, leaderboard: boardView, podium: podiumView }[ph]();
+  applyTheme(g ? g.theme : null);
   const bare = !g && (!H.user || H.view === "reset");
   document.body.classList.toggle("auth-page", bare && H.authReady);
   $("host").innerHTML = (bare ? "" : topBar()) + `<div class="host-body ${g ? "in-game" : "view-" + H.view}">${body}</div>`;
@@ -197,7 +209,7 @@ function topBar() {
     : `<span class="user-chip" title="${esc(H.user && H.user.email)}"><span class="avatar" aria-hidden="true">${esc(((firstName(H.user) || (H.user && H.user.email) || "?")[0] || "?").toUpperCase())}</span><span class="user-email">${esc(H.user && H.user.email)}</span></span>
        <button class="btn small ghost" data-act="signout">Sign out</button>`;
   return `<header class="host-top">
-    <div class="brand"><button class="brand-home" data-act="home" aria-label="My games"><img class="brand-logo" src="/assets/logo.png" alt="eventpadi"></button><span class="live-pill">LIVE</span>${g ? conn : ""}</div>
+    <div class="brand">${g && g.theme && g.theme.logo ? themeLogo(g.theme, "event-logo top") + `<span class="powered">with <img src="/assets/logo.png" alt="eventpadi"></span>` : `<button class="brand-home" data-act="home" aria-label="My games"><img class="brand-logo" src="/assets/logo.png" alt="eventpadi"></button>`}<span class="live-pill">LIVE</span>${g ? conn : ""}</div>
     <div class="toolbar">${right}</div>
   </header>`;
 }
@@ -226,6 +238,7 @@ function setupView() {
       <div class="field"><label for="ev">Event</label><input class="input" id="ev" data-meta="event" maxlength="80" value="${esc(qz.event)}" placeholder="e.g. Lagos Tech Summit"></div>
       <div class="field"><label for="qt">Game title</label><input class="input" id="qt" data-meta="title" maxlength="80" value="${esc(qz.title)}" placeholder="e.g. Morning icebreaker"></div>
     </div>
+    ${brandingCard(qz.theme)}
     <div class="editor">
       <div class="qlist">
         <div class="qlist-head"><span class="lbl">Rounds</span><span class="chip">${qs.length}</span></div>
@@ -253,6 +266,25 @@ function setupView() {
         ${roundForm(cur)}
       </div>
     </div>`;
+}
+
+function brandingCard(t) {
+  const sw = BRAND_COLORS.map((c) => `<button class="swatch" style="--sw:${c}" data-act="brandcolor" data-c="${c}" aria-label="Use colour ${c}" aria-pressed="${t.color === c || (!t.color && c === "#9b0eed")}"></button>`).join("");
+  return `<details class="card branding" ${H.brandOpen ? "open" : ""} data-brand>
+    <summary><span><b>Event branding</b><span class="note"> · your logo, colour and sponsor on the big screen and phones</span></span>
+      <span class="brand-mini" style="${t.color ? `--mini:${esc(t.color)}` : ""}">${t.logo ? `<img src="${esc(t.logo)}" alt="">` : ""}</span></summary>
+    <div class="brand-grid">
+      <div class="field"><span class="lbl">Brand colour</span>
+        <div class="swatches">${sw}<label class="swatch custom" title="Custom colour"><input type="color" data-theme="color" value="${esc(t.color || "#9b0eed")}" aria-label="Custom brand colour"></label></div>
+        <span class="note">Very light colours are darkened automatically so text stays readable.</span></div>
+      <div class="field"><span class="lbl">Event logo</span>
+        ${t.logo
+          ? `<div class="img-preview logo"><img src="${esc(t.logo)}" alt="Event logo"><button class="btn small ghost danger" data-act="logoremove">Remove</button></div>`
+          : `<button class="btn img-drop" data-act="logopick" ${H.uploading ? "disabled" : ""}>${H.uploading === "logo" ? "Uploading…" : "Upload logo (PNG with transparency works best)"}</button>`}</div>
+      <div class="field"><label for="sponsor">Sponsor line (optional)</label>
+        <input class="input" id="sponsor" data-theme="sponsor" maxlength="60" value="${esc(t.sponsor)}" placeholder="e.g. Acme Bank"><span class="note">Shown as "Sponsored by …" on the big screen.</span></div>
+    </div>
+  </details>`;
 }
 
 function roundForm(cur) {
@@ -318,7 +350,7 @@ function lobbyView() {
       <div class="qr">${qrSvg(`${joinBase()}/?pin=${g.pin}`)}</div>
     </div>
     <div class="row spread">
-      <div><h2>${esc(g.title)}</h2><div class="note">${esc(g.event)}${g.event ? " · " : ""}${g.total} round${g.total === 1 ? "" : "s"}${g.locked ? " · Joining is locked" : ""}</div></div>
+      <div class="lobby-title">${themeLogo(g.theme, "event-logo lobby")}<div><h2>${esc(g.title)}</h2><div class="note">${g.theme && g.theme.sponsor ? "Sponsored by " + esc(g.theme.sponsor) + " · " : ""}${esc(g.event)}${g.event ? " · " : ""}${g.total} round${g.total === 1 ? "" : "s"}${g.locked ? " · Joining is locked" : ""}</div></div></div>
       <div class="row">
         <span class="chip" aria-live="polite">${g.player_count} joined</span>
         <button class="btn ghost" data-act="back">Edit game</button>
@@ -374,7 +406,7 @@ function questionView() {
       <div class="word-display" style="--len:${Math.max(4, (g.word || "").length)}">${esc(g.word || "")}</div>
       <div class="qmid">
         ${timerRing(g)}
-        <div class="sponsor">${esc(g.event)}</div>
+        ${sponsorLine(g)}
         <div class="stat"><b id="answered">${g.answered}</b><span>of <span id="pcount">${g.player_count}</span> typed it</span></div>
       </div>`;
   }
@@ -383,11 +415,15 @@ function questionView() {
     <div class="qtitle">${esc(q.text)}</div>
     <div class="qmid ${q.image ? "has-img" : ""}">
       ${timerRing(g)}
-      ${q.image ? `<img class="q-image" src="${esc(q.image)}" alt="">` : `<div class="sponsor">${esc(g.event)}</div>`}
+      ${q.image ? `<img class="q-image" src="${esc(q.image)}" alt="">` : `${sponsorLine(g)}`}
       <div class="stat"><b id="answered">${g.answered}</b><span>of <span id="pcount">${g.player_count}</span> answered</span></div>
     </div>
     ${answerTiles(false)}`;
 }
+
+const sponsorLine = (g) => g.theme && g.theme.sponsor
+  ? `<div class="sponsor"><span class="lbl">Sponsored by</span><b>${esc(g.theme.sponsor)}</b></div>`
+  : `<div class="sponsor">${esc(g.event)}</div>`;
 
 function startTimer() {
   const g = H.game;
@@ -506,6 +542,7 @@ function podiumView() {
       <div class="row"><button class="btn" data-act="csv">Download results (CSV)</button><button class="btn primary" data-act="finish">Close game</button></div></div>
     ${g.scored ? `<div class="podium">${step(r[1], "p2", 2)}${step(r[0], "p1", 1)}${step(r[2], "p3", 3)}</div>
     <p class="prize">Top 3, please come to the help desk to collect your prizes.</p>` : ""}
+    ${g.theme && g.theme.sponsor ? `<p class="sponsor-foot">Sponsored by <b>${esc(g.theme.sponsor)}</b></p>` : ""}
     ${raffleList}
     <details class="all-results"><summary>All ${r.length} players</summary>
       <table class="results"><thead><tr><th>Rank</th><th>Name</th>${g.scored ? "<th>Score</th><th>Correct</th>" : ""}<th>Prizes</th></tr></thead><tbody>${table}</tbody></table>
@@ -655,15 +692,15 @@ $("importFile").addEventListener("change", async (e) => {
 
 /* Question image: shrink in the browser (max 1280×800, JPEG) then upload to the
    organiser's folder in the quiz-images bucket. */
-async function shrinkImage(file) {
+async function shrinkImage(file, logo) {
   const bmp = await createImageBitmap(file);
-  const k = Math.min(1, 1280 / bmp.width, 800 / bmp.height);
+  const k = Math.min(1, (logo ? 600 : 1280) / bmp.width, (logo ? 240 : 800) / bmp.height);
   const c = document.createElement("canvas");
   c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
   const x = c.getContext("2d");
-  x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height);
+  if (!logo) { x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); }
   x.drawImage(bmp, 0, 0, c.width, c.height);
-  return new Promise((res) => c.toBlob(res, "image/jpeg", 0.85));
+  return new Promise((res) => c.toBlob(res, logo ? "image/png" : "image/jpeg", 0.85));
 }
 
 $("imgFile").addEventListener("change", async (e) => {
@@ -672,14 +709,15 @@ $("imgFile").addEventListener("change", async (e) => {
   if (!f || !H.quiz || !H.user) return;
   if (!/^image\//.test(f.type)) return toast("Choose an image file (JPG, PNG, WebP or GIF).", true);
   if (f.size > 15 * 1024 * 1024) return toast("That image is too large. Use one under 15 MB.", true);
-  const idx = H.editIdx, quiz = H.quiz;
-  H.uploading = true; render();
+  const idx = H.editIdx, quiz = H.quiz, logo = H.imgTarget === "logo";
+  H.uploading = logo ? "logo" : "image"; render();
   try {
-    const blob = await shrinkImage(f);
-    const path = `${H.user.id}/${crypto.randomUUID()}.jpg`;
-    const { error } = await sb.storage.from("quiz-images").upload(path, blob, { contentType: "image/jpeg", cacheControl: "31536000" });
+    const blob = await shrinkImage(f, logo);
+    const path = `${H.user.id}/${crypto.randomUUID()}.${logo ? "png" : "jpg"}`;
+    const { error } = await sb.storage.from("quiz-images").upload(path, blob, { contentType: logo ? "image/png" : "image/jpeg", cacheControl: "31536000" });
     if (error) throw error;
-    quiz.questions[idx].image = sb.storage.from("quiz-images").getPublicUrl(path).data.publicUrl;
+    const url = sb.storage.from("quiz-images").getPublicUrl(path).data.publicUrl;
+    if (logo) quiz.theme.logo = url; else quiz.questions[idx].image = url;
     if (H.quiz === quiz) saveDraft();
   } catch (err) {
     console.error(err);
@@ -787,7 +825,10 @@ document.addEventListener("click", async (e) => {
       download(`${slug(H.quiz.title)}.json`, JSON.stringify(rest, null, 2), "application/json"); break;
     }
     case "open": openLobby(); break;
-    case "imgpick": $("imgFile").click(); break;
+    case "imgpick": H.imgTarget = "image"; $("imgFile").click(); break;
+    case "logopick": H.imgTarget = "logo"; H.brandOpen = true; $("imgFile").click(); break;
+    case "logoremove": H.quiz.theme.logo = ""; H.brandOpen = true; edited(); break;
+    case "brandcolor": H.quiz.theme.color = b.dataset.c === "#9b0eed" ? "" : b.dataset.c; H.brandOpen = true; edited(); break;
     case "imgremove": qs[H.editIdx].image = ""; edited(); break;
     case "truefalse": {
       const cur = qs[H.editIdx];
@@ -823,6 +864,9 @@ document.addEventListener("click", async (e) => {
   }
 });
 
+// Remember whether the branding panel is open across re-renders.
+document.addEventListener("toggle", (e) => { if (e.target.matches && e.target.matches("details[data-brand]")) H.brandOpen = e.target.open; }, true);
+
 document.addEventListener("submit", (e) => {
   const f = e.target.closest("form[data-form]");
   if (!f) return;
@@ -843,6 +887,7 @@ document.addEventListener("input", (e) => {
   if (!H.quiz || H.view !== "edit") return;
   const cur = H.quiz.questions[H.editIdx];
   if (t.dataset.meta) H.quiz[t.dataset.meta] = t.value;
+  else if (t.dataset.theme === "sponsor") H.quiz.theme.sponsor = t.value;
   else if (t.dataset.field === "text" || t.dataset.field === "answer") {
     cur[t.dataset.field] = t.value;
     const el = $("qtext-" + H.editIdx); if (el) el.textContent = roundTitle(cur);
@@ -856,7 +901,8 @@ document.addEventListener("change", (e) => {
   const t = e.target;
   if (H.game || !H.quiz || H.view !== "edit") return;
   const cur = H.quiz.questions[H.editIdx];
-  if (t.dataset.correct) cur.correct = +t.dataset.correct;
+  if (t.dataset.theme === "color") { H.quiz.theme.color = t.value.toLowerCase(); H.brandOpen = true; render(); }
+  else if (t.dataset.correct) cur.correct = +t.dataset.correct;
   else if (t.dataset.field === "time" || t.dataset.field === "winners") { cur[t.dataset.field] = +t.value; render(); }
   else return;
   saveDraft();

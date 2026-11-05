@@ -37,6 +37,7 @@ function render() {
   const off = P.session && !P.connected && !P.resuming ? `<div class="offline" role="status">Reconnecting…</div>` : "";
   const foot = me && s.phase !== "lobby" ? `<div class="phone-foot"><span>${esc(me.name)}</span><span>${me.score.toLocaleString()} pts</span></div>` : "";
   document.body.classList.toggle("joining", !s);
+  applyTheme(s ? s.theme : P.step === "nick" && P.info ? P.info.theme : null);
   // Keep whatever is being typed across re-renders.
   const keep = ["nick", "typein"].map((id) => [id, $(id) && $(id).value, document.activeElement && document.activeElement.id === id]);
   const reacts = s && ["lobby", "reveal", "leaderboard", "podium"].includes(ph) ? reactBar() : "";
@@ -59,7 +60,7 @@ function body(ph) {
     if (P.resuming) return `<div class="center"><div class="join-card"><div class="spinner" aria-hidden="true" style="margin:0 auto"></div><p>Reconnecting to your game…</p></div></div>`;
     if (P.step === "nick") {
       return `<div class="center"><div class="join-card">
-        <img class="brand-logo" src="/assets/logo.png" alt="eventpadi">
+        ${P.info && P.info.theme && P.info.theme.logo ? themeLogo(P.info.theme, "event-logo join") : `<img class="brand-logo" src="/assets/logo.png" alt="eventpadi">`}
         ${P.info ? `<div><span class="event-name">${esc(P.info.event || P.info.title)}</span></div>` : ""}
         <h2>Pick a nickname</h2><p class="hint">This is how you'll appear on the big screen.</p>
         <div class="av-picked" aria-hidden="true">${P.avatar}</div>
@@ -81,7 +82,7 @@ function body(ph) {
   const me = s.me, q = s.question;
   switch (ph) {
     case "lobby":
-      return `<div class="center">${s.event ? `<div class="event-name">${esc(s.event)}</div>` : ""}<div class="lobby-av" aria-hidden="true">${esc(me.avatar || "🎉")}</div><h2>You're in!</h2><p>See your name on the screen?</p><p class="hint">The game starts when the host is ready.</p>
+      return `<div class="center">${s.event ? `<div class="event-name">${esc(s.event)}</div>` : ""}${themeLogo(s.theme, "event-logo phone-lobby")}<div class="lobby-av" aria-hidden="true">${esc(me.avatar || "🎉")}</div><h2>You're in!</h2><p>See your name on the screen?</p><p class="hint">The game starts when the host is ready.</p>${s.theme && s.theme.sponsor ? `<p class="sponsor-foot">Sponsored by <b>${esc(s.theme.sponsor)}</b></p>` : ""}
         <button class="btn link" data-act="leave">Not you? Change nickname</button></div>`;
     case "intro": {
       const chip = `<span class="chip">Round ${s.qi + 1} of ${s.total} · ${roundLabel(q.type)}</span>`;
@@ -261,7 +262,7 @@ async function enterPin() {
   P.busy = false;
   if (r.error) { P.err = r.error; render(); return focusInput(); }
   P.gameId = r.game_id;
-  P.info = { event: r.event, title: r.title };
+  P.info = { event: r.event, title: r.title, theme: r.theme || {} };
   P.step = "nick"; P.err = "";
   render(); focusInput();
 }
