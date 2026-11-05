@@ -15,15 +15,71 @@ const store = {
   del(key, area = localStorage) { try { area.removeItem(key); } catch { /* ignore */ } }
 };
 
+/* Small notification at the bottom of the screen. */
 let toastTimer;
 function toast(msg, bad = false) {
   const t = $("toast");
   if (!t) return;
-  t.textContent = msg;
+  t.innerHTML = `<span class="toast-icon" aria-hidden="true">${bad ? "!" : "✓"}</span><span>${esc(msg)}</span>`;
   t.className = "toast" + (bad ? " bad" : "");
   t.hidden = false;
+  requestAnimationFrame(() => t.classList.add("show"));
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 3500);
+  toastTimer = setTimeout(() => { t.classList.remove("show"); setTimeout(() => { t.hidden = true; }, 250); }, 3500);
+}
+
+/**
+ * Branded popup in place of the browser's confirm()/alert().
+ * Resolves true when confirmed, false when cancelled (button, Esc or backdrop click).
+ *   popup({ title, message, confirmLabel, cancelLabel, tone: "danger" | "primary", icon })
+ * Pass cancelLabel: null for a single-button message.
+ */
+function popup({ title, message = "", confirmLabel = "OK", cancelLabel = "Cancel", tone = "primary", icon } = {}) {
+  return new Promise((resolve) => {
+    const prevFocus = document.activeElement;
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.innerHTML = `
+      <div class="modal ${tone === "danger" ? "danger" : ""}" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-msg">
+        <div class="modal-icon" aria-hidden="true">${esc(icon || (tone === "danger" ? "!" : "?"))}</div>
+        <h2 id="modal-title">${esc(title)}</h2>
+        ${message ? `<p id="modal-msg">${esc(message)}</p>` : ""}
+        <div class="modal-actions">
+          ${cancelLabel ? `<button class="btn" data-modal="cancel">${esc(cancelLabel)}</button>` : ""}
+          <button class="btn ${tone === "danger" ? "danger-solid" : "primary"}" data-modal="ok">${esc(confirmLabel)}</button>
+        </div>
+      </div>`;
+    const close = (val) => {
+      document.removeEventListener("keydown", onKey, true);
+      wrap.classList.remove("show");
+      setTimeout(() => wrap.remove(), 180);
+      if (prevFocus && prevFocus.focus) prevFocus.focus();
+      resolve(val);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(false); }
+      else if (e.key === "Tab") {
+        // keep focus inside the popup
+        const btns = [...wrap.querySelectorAll("button")];
+        const i = btns.indexOf(document.activeElement);
+        e.preventDefault();
+        btns[(i + (e.shiftKey ? -1 : 1) + btns.length) % btns.length].focus();
+      } else if (e.key === "Enter" || e.key === " ") {
+        // Enter/Space act on the focused button and must not reach page shortcuts
+        e.stopPropagation();
+      }
+    };
+    wrap.addEventListener("click", (e) => {
+      if (e.target === wrap) return close(false);
+      const b = e.target.closest("[data-modal]");
+      if (b) { e.stopPropagation(); close(b.dataset.modal === "ok"); }
+    });
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(wrap);
+    requestAnimationFrame(() => wrap.classList.add("show"));
+    // Focus the safe choice for destructive actions, the main action otherwise.
+    (wrap.querySelector(tone === "danger" && cancelLabel ? '[data-modal="cancel"]' : '[data-modal="ok"]')).focus();
+  });
 }
 
 /* Keep the screen awake during a game (projector laptops and phones). */

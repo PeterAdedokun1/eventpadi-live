@@ -119,13 +119,28 @@ function focusInput() {
 /* ---------- Game state ---------- */
 function setSession(s) { P.session = s; s ? store.set(K_SESSION, s) : store.del(K_SESSION); }
 
+const LEFT_GAME = {
+  "The host ended the game.": { title: "Game over", message: "The host has ended this game. Thanks for playing!", icon: "★" },
+  "The game has ended.": { title: "Game over", message: "This game has ended. Thanks for playing!", icon: "★" },
+  "The host removed you from the game.": { title: "You've been removed", message: "The host removed you from this game. You can join again with a new nickname if the lobby is still open.", icon: "!" }
+};
+
 function backToStart(msg) {
+  const wasInGame = !!P.session;
   unlisten(P.ch); P.ch = null;
   setSession(null);
   P.state = null; P.pending = null; P.resuming = false; P.connected = false;
-  P.step = "pin"; P.pin = ""; P.info = null; P.err = msg || "";
+  P.step = "pin"; P.pin = ""; P.info = null; P.err = "";
   wake.off();
-  render(); focusInput();
+  render();
+  if (msg && wasInGame) {
+    const m = LEFT_GAME[msg] || { title: "You've left the game", message: msg, icon: "i" };
+    popup({ ...m, confirmLabel: "OK", cancelLabel: null }).then(focusInput);
+  } else {
+    P.err = msg || "";
+    if (msg) render();
+    focusInput();
+  }
 }
 
 function applyState(v) {

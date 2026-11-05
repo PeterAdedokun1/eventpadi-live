@@ -98,8 +98,41 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 
 .bg-a { background: var(--a); } .bg-b { background: var(--b); } .bg-c { background: var(--c); } .bg-d { background: var(--d); }
 
-.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50; background: #1b1326; color: #fff; padding: 12px 18px; border-radius: 12px; font-weight: 700; box-shadow: var(--shadow-lg); max-width: min(92vw, 520px); text-align: center; }
-.toast.bad { background: var(--bad); }
+/* Notification */
+.toast {
+  position: fixed; left: 50%; bottom: 24px; z-index: 60;
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface); color: var(--text); border: 1px solid var(--line);
+  padding: 12px 18px 12px 12px; border-radius: 16px; font-weight: 700;
+  box-shadow: 0 20px 40px -16px rgba(40, 10, 80, 0.4), var(--shadow-sm);
+  max-width: min(92vw, 520px);
+  opacity: 0; transform: translate(-50%, 16px); transition: opacity 0.22s, transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast-icon { flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--good-50); color: var(--good); font-weight: 800; }
+.toast.bad .toast-icon { background: var(--bad-50); color: var(--bad); }
+
+/* Popup (replaces the browser's confirm/alert) */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 20px;
+  background: rgba(27, 12, 46, 0.45); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  opacity: 0; transition: opacity 0.18s;
+}
+.modal-backdrop.show { opacity: 1; }
+.modal {
+  width: min(440px, 100%); background: var(--surface); border-radius: 26px; padding: 28px 26px 22px;
+  text-align: center; box-shadow: 0 40px 80px -24px rgba(40, 0, 80, 0.55);
+  transform: translateY(14px) scale(0.96); transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.modal-backdrop.show .modal { transform: none; }
+.modal-icon { width: 58px; height: 58px; margin: 0 auto 14px; border-radius: 18px; display: grid; place-items: center; font-family: var(--display); font-weight: 800; font-size: 28px; color: #fff; background: var(--grad); box-shadow: 0 12px 24px -10px rgba(155, 14, 237, 0.7); }
+.modal.danger .modal-icon { background: linear-gradient(150deg, #f05468, #c4223a); box-shadow: 0 12px 24px -10px rgba(196, 34, 58, 0.7); }
+.modal h2 { font-size: 22px; }
+.modal p { color: var(--muted); margin-top: 8px; font-size: 15px; }
+.modal-actions { display: flex; gap: 10px; margin-top: 22px; }
+.modal-actions .btn { flex: 1; padding: 13px 16px; font-size: 15px; }
+.btn.danger-solid { background: linear-gradient(150deg, #e8475c, #c4223a); color: #fff; border-color: transparent; box-shadow: 0 10px 22px -10px rgba(196, 34, 58, 0.75); }
+.btn.danger-solid:hover { color: #fff; filter: brightness(1.07); border-color: transparent; }
 .err-box { background: var(--bad-50); border: 1px solid #f5c3ca; color: #9e1b2e; border-radius: 14px; padding: 12px 16px; font-weight: 700; }
 .empty { color: var(--muted); border: 2px dashed var(--line-strong); border-radius: 18px; padding: 36px 18px; width: 100%; text-align: center; background: rgba(255, 255, 255, 0.6); font-weight: 500; }
 .spinner { width: 40px; height: 40px; border-radius: 50%; border: 4px solid var(--accent-100); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }

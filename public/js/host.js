@@ -452,7 +452,7 @@ document.addEventListener("click", async (e) => {
       [qs[H.editIdx], qs[j]] = [qs[j], qs[H.editIdx]]; H.editIdx = j; edited(); break;
     }
     case "new":
-      if (!confirm("Start a new, empty quiz? Save the current one to My quizzes first if you want to keep it.")) return;
+      if (!(await popup({ title: "Start a new quiz?", message: "This clears the editor. Save the current quiz to My quizzes first if you want to keep it.", confirmLabel: "Start new quiz", icon: "+" }))) return;
       H.quiz = normaliseQuiz({ title: "", event: H.quiz.event, questions: [] }); H.editIdx = 0; H.err = ""; edited(); break;
     case "save": {
       const lib = library().filter((x) => x.id !== H.quiz.id);
@@ -467,7 +467,7 @@ document.addEventListener("click", async (e) => {
       break;
     }
     case "libdel":
-      if (!confirm("Delete this saved quiz?")) return;
+      if (!(await popup({ title: "Delete this quiz?", message: `"${(library().find((y) => y.id === b.dataset.id) || {}).title || "This quiz"}" will be removed from My quizzes. This can't be undone.`, confirmLabel: "Delete", tone: "danger" }))) return;
       store.set(K.lib, library().filter((y) => y.id !== b.dataset.id)); render(); break;
     case "import": $("importFile").click(); break;
     case "export": {
@@ -479,12 +479,14 @@ document.addEventListener("click", async (e) => {
     case "next": b.disabled = true; act("next"); break;
     case "reveal": act("reveal"); break;
     case "lock": act("lock", { locked: !H.game.locked }); break;
-    case "kick": if (confirm(`Remove ${b.dataset.name} from the game?`)) act("kick", { player_id: b.dataset.id }); break;
+    case "kick":
+      if (await popup({ title: `Remove ${b.dataset.name}?`, message: "They'll be taken out of the game and see a message on their phone.", confirmLabel: "Remove player", tone: "danger" })) act("kick", { player_id: b.dataset.id });
+      break;
     case "back":
-      if (H.game.player_count && !confirm("Go back to editing? This closes the lobby and players will need the new PIN.")) return;
+      if (H.game.player_count && !(await popup({ title: "Go back to editing?", message: "This closes the lobby. Players will need to join again with a new PIN.", confirmLabel: "Close lobby", tone: "danger" }))) return;
       if (!(await act("end")).error) gameOver(); break;
     case "end":
-      if (!confirm("End this game for everyone?")) return;
+      if (!(await popup({ title: "End this game?", message: "The game stops for everyone and players return to the join screen.", confirmLabel: "End game", tone: "danger" }))) return;
       if (!(await act("end")).error) gameOver("Game ended."); break;
     case "finish": if (!(await act("end")).error) gameOver(); break;
     case "csv": exportCsv(); break;
